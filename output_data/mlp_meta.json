@@ -1,0 +1,13 @@
+{
+  "best_hidden": [
+    20,
+    20
+  ],
+  "best_alpha": 0.001,
+  "val_r2": 0.9850536617569021,
+  "test_r2": 0.9830918743636706,
+  "test_mrs_percent": 3.953109800027258,
+  "max_iter": 5000,
+  "random_state": 0,
+  "data_path": "data/数据集.xlsx"
+}
