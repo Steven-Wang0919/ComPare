@@ -55,7 +55,7 @@ def select_optimal_opening(target_mass: float) -> float:
 
 
 # =============== 1. GRNN：带 val R² 选 σ 的训练 & 评估 ===============
-def run_grnn(data_path="data/数据集.xlsx"):
+def run_grnn(data_path="data/dataset.xlsx"):
     print("\n=== 训练 & 评估 反向 GRNN ===")
 
     # --- A. 加载数据并构造“反向问题” ---
@@ -170,7 +170,7 @@ def run_grnn(data_path="data/数据集.xlsx"):
 
 
 # =============== 2. MLP：直接调用你已有的训练函数 ===============
-def run_mlp(data_path="data/数据集.xlsx"):
+def run_mlp(data_path="data/dataset.xlsx"):
     print("\n=== 训练 & 评估 反向 MLP ===")
     # 你的 inverse_mlp.train_and_eval_inverse_mlp 已经：
     # - 使用相同的 get_train_val_test_indices
@@ -195,7 +195,7 @@ def run_mlp(data_path="data/数据集.xlsx"):
 
 
 # =============== 3. KAN V2：基于 inverse_kan_V2 的逻辑封装成函数 ===============
-def run_kan_v2(data_path="data/数据集.xlsx"):
+def run_kan_v2(data_path="data/dataset.xlsx"):
     print("\n=== 训练 & 评估 反向 KAN V2 ===")
 
     X_raw, y_raw = load_data(data_path)

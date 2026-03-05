@@ -52,7 +52,7 @@ def select_optimal_opening(target_mass: float) -> float:
 # 2. 反向 MLP 训练 & 策略一致性评估
 # =========================
 def train_and_eval_inverse_mlp(
-    data_path="data/数据集.xlsx",
+    data_path="data/dataset.xlsx",
     hidden_layer_candidates=None,
     alpha_candidates=None,
     max_iter=5000,

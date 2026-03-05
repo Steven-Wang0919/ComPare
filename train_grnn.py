@@ -38,7 +38,7 @@ class GRNN:
 
 
 def train_and_eval_grnn(
-    data_path="data/数据集.xlsx",
+    data_path="data/dataset.xlsx",
     sigma_grid=None,
     save_csv_path="results_grnn.csv",
 ):

@@ -20,7 +20,7 @@ from common_utils import load_data, get_train_val_test_indices, mean_relative_er
 
 
 def train_and_eval_mlp(
-    data_path="data/数据集.xlsx",
+    data_path="data/dataset.xlsx",
     hidden_layer_candidates=None,
     alpha_candidates=None,
     max_iter=5000,

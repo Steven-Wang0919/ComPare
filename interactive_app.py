@@ -31,7 +31,7 @@ MODEL_INV_PATH = os.path.join(SAVE_DIR, "kan_inverse.pth")
 # ===========================================
 
 class FertilizerSystem:
-    def __init__(self, data_path="data/数据集.xlsx"):
+    def __init__(self, data_path="data/dataset.xlsx"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"正在初始化施肥控制系统 (Device: {self.device})...")
 

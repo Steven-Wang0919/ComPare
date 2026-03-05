@@ -163,7 +163,7 @@ class FertilizerKAN(nn.Module):
 # 3. 训练 & 评估函数（含超参搜索）
 # =========================
 def train_and_eval_kan(
-    data_path="data/数据集.xlsx",
+    data_path="data/dataset.xlsx",
     hidden_dim_candidates=None,
     lr_candidates=None,
     weight_decay_candidates=None,

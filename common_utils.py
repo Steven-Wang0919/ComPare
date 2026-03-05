@@ -21,7 +21,7 @@ def mean_relative_error(y_true, y_pred, eps=1e-8):
     return float(np.mean(np.abs((y_pred - y_true) / denom)) * 100.0)
 
 
-def load_data(path="data/数据集.xlsx"):
+def load_data(path="data/dataset.xlsx"):
     """
     读取数据，返回 X, y
     X: (n_samples, 2) -> [排肥口开度（mm）, 排肥轴转速（r/min）]
