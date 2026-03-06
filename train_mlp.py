@@ -1,15 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-训练 & 评估 MLP（最终精简稳定版，无 Warning）
+训练 & 评估 MLP（最终精简稳定版）
 
 - 使用 train/val/test 三分数据
 - 使用 0–1 归一化
 - 超参数搜索（hidden_layer_sizes, alpha）
-- 固定 solver='lbfgs'（避免所有 ConvergenceWarning）
+- 固定 solver='lbfgs'
 """
-
-import warnings
-warnings.filterwarnings("ignore")  # 全局关闭 sklearn 的 Warning
 
 import numpy as np
 import pandas as pd
@@ -60,7 +57,7 @@ def train_and_eval_mlp(
     X_val = norm_x(X_val_raw)
     X_test = norm_x(X_test_raw)
 
-    # 4. 在验证集上做网格搜索（solver 固定为 lbfgs → 无 warning）
+    # 4. 在验证集上做网格搜索
     best_r2_val = -np.inf
     best_hidden = None
     best_alpha = None
@@ -70,7 +67,7 @@ def train_and_eval_mlp(
             mlp = MLPRegressor(
                 hidden_layer_sizes=h,
                 alpha=a,
-                solver="lbfgs",          # 固定 lbfgs，避免 warning
+                solver="lbfgs",
                 max_iter=max_iter,
                 random_state=random_state,
             )

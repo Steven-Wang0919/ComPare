@@ -6,16 +6,15 @@
 1. 自动在代码同级目录下创建 'path' 文件夹
 2. 将训练好的模型权重保存到 'path' 文件夹中
 3. 启动时优先从 'path' 文件夹加载模型
-4. 正向模型使用论文当前最优 KAN 结构默认值
-5. 反向模型使用 inverse_kan_V2 中的最终版本模型
-6. 归一化参数基于 train+val 统计，与实验脚本口径一致
+4. 模型结构和训练参数优先从 model_meta.json 读取，避免硬编码“论文当前最优参数”
+5. 正向模型使用 train_kan.py 中的 FertilizerKAN
+6. 反向模型使用 inverse_kan.py 中的 InverseFertilizerKAN
+7. 归一化参数基于 train+val 统计，与实验脚本口径一致
 """
 
 import json
 import os
 import random
-import sys
-import time
 
 import numpy as np
 import torch
@@ -24,7 +23,7 @@ import torch.optim as optim
 
 from common_utils import load_data, get_train_val_test_indices
 from train_kan import FertilizerKAN
-from inverse_kan_V2 import InverseFertilizerKAN, select_optimal_opening
+from inverse_kan import InverseKANModel, select_optimal_opening
 
 
 # ================= 配置区域 =================
@@ -34,25 +33,28 @@ MODEL_FWD_PATH = os.path.join(SAVE_DIR, "kan_forward.pth")
 MODEL_INV_PATH = os.path.join(SAVE_DIR, "kan_inverse.pth")
 META_PATH = os.path.join(SAVE_DIR, "model_meta.json")
 
-DEFAULT_SEED = 42
+DEFAULT_CONFIG = {
+    "seed": 42,
+    "data_path": "data/dataset.xlsx",
+    "normalization_scope": "train+val",
 
-# 与论文当前结果保持一致的默认结构
-FORWARD_HIDDEN_DIM = 16
-INVERSE_HIDDEN_DIM = 16
+    "forward_model_class": "FertilizerKAN",
+    "forward_hidden_dim": 16,
+    "forward_lr": 0.005,
+    "forward_weight_decay": 1e-5,
+    "forward_epochs": 600,
 
-# 训练参数
-FORWARD_LR = 0.005
-FORWARD_WEIGHT_DECAY = 1e-5
+    "inverse_model_class": "InverseFertilizerKAN",
+    "inverse_hidden_dim": 16,
+    "inverse_lr": 0.005,
+    "inverse_weight_decay": 1e-5,
+    "inverse_epochs": 600,
 
-INVERSE_LR = 0.005
-INVERSE_WEIGHT_DECAY = 1e-5
-
-FORWARD_EPOCHS = 600
-INVERSE_EPOCHS = 600
-LR_GAMMA = 0.99
+    "lr_gamma": 0.99,
+}
 
 
-def set_seed(seed=DEFAULT_SEED):
+def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -65,32 +67,67 @@ def set_seed(seed=DEFAULT_SEED):
 
 
 class FertilizerSystem:
-    def __init__(self, data_path="data/dataset.xlsx"):
-        set_seed(DEFAULT_SEED)
-
+    def __init__(self, data_path=None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         print(f"正在初始化施肥控制系统 (Device: {self.device})...")
 
-        if not os.path.exists(SAVE_DIR):
-            print(f"创建配置文件夹: {SAVE_DIR}/")
-            os.makedirs(SAVE_DIR, exist_ok=True)
+        os.makedirs(SAVE_DIR, exist_ok=True)
 
-        self.data_path = data_path
+        self.config = self._load_or_init_config(data_path=data_path)
+        self.seed = int(self.config["seed"])
+        set_seed(self.seed)
+
+        self.data_path = self.config["data_path"]
 
         # 1. 加载数据并基于 train+val 初始化归一化参数
-        self._init_data_params(data_path)
+        self._init_data_params(self.data_path)
 
         # 2. 获取模型（优先加载，否则训练）
         self.forward_model = self._get_forward_model()
         self.inverse_model = self._get_inverse_model()
 
-        # 3. 保存元信息，确保后续知道当前系统实际加载的是哪套模型
+        # 3. 保存元信息，确保当前系统实际配置可追踪
         self._save_meta()
 
         print("\n>>> 系统就绪！当前模型与配置已保存至 path/ 目录")
 
+    # =========================
+    # 配置管理
+    # =========================
+    def _load_or_init_config(self, data_path=None):
+        config = dict(DEFAULT_CONFIG)
+
+        if os.path.exists(META_PATH):
+            try:
+                with open(META_PATH, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    config.update(loaded)
+                print(f"已读取模型配置: {META_PATH}")
+            except Exception as e:
+                print(f"读取配置失败（{e}），将使用默认配置。")
+        else:
+            print("未找到 model_meta.json，将使用默认配置初始化。")
+
+        if data_path is not None:
+            config["data_path"] = data_path
+
+        return config
+
+    def _save_meta(self):
+        with open(META_PATH, "w", encoding="utf-8") as f:
+            json.dump(self.config, f, ensure_ascii=False, indent=2)
+
+    def show_config(self):
+        print("\n===== 当前系统配置 =====")
+        for k, v in self.config.items():
+            print(f"{k}: {v}")
+
+    # =========================
+    # 数据与归一化参数
+    # =========================
     def _init_data_params(self, path):
-        """基于 train+val 统计归一化参数，与实验脚本保持一致"""
         print(f"正在读取数据: {path} ...")
         if not os.path.exists(path):
             raise FileNotFoundError(f"找不到数据文件: {path}")
@@ -150,19 +187,24 @@ class FertilizerSystem:
     # 模型定义
     # =========================
     def _build_forward_model(self):
+        hidden_dim = int(self.config["forward_hidden_dim"])
         return FertilizerKAN(
             input_dim=2,
-            hidden_dim=FORWARD_HIDDEN_DIM,
+            hidden_dim=hidden_dim,
             output_dim=1
         ).to(self.device)
 
     def _build_inverse_model(self):
-        return InverseFertilizerKAN(
+        hidden_dim = int(self.config["inverse_hidden_dim"])
+        return InverseKANModel(
             input_dim=2,
-            hidden_dim=INVERSE_HIDDEN_DIM,
+            hidden_dim=hidden_dim,
             output_dim=1
         ).to(self.device)
 
+    # =========================
+    # 模型获取 / 训练 / 保存
+    # =========================
     def _get_forward_model(self, force_retrain=False):
         model = self._build_forward_model()
 
@@ -173,7 +215,7 @@ class FertilizerSystem:
                 model.eval()
                 return model
             except Exception as e:
-                print(f"加载失败 ({e})，准备重新训练...")
+                print(f"加载失败（{e}），准备重新训练...")
 
         print("[- 正向模型] 正在训练...")
         self._train_model_process(model, mode="forward")
@@ -191,7 +233,7 @@ class FertilizerSystem:
                 model.eval()
                 return model
             except Exception as e:
-                print(f"加载失败 ({e})，准备重新训练...")
+                print(f"加载失败（{e}），准备重新训练...")
 
         print("[- 反向模型] 正在训练...")
         self._train_model_process(model, mode="inverse")
@@ -201,7 +243,7 @@ class FertilizerSystem:
 
     def _train_model_process(self, model, mode="forward"):
         """按与论文实验一致的 train+val 口径训练模型"""
-        set_seed(DEFAULT_SEED)
+        set_seed(self.seed)
 
         train_full_idx = np.concatenate([self.idx_tr, self.idx_val])
 
@@ -212,9 +254,9 @@ class FertilizerSystem:
             X_data = self._norm_forward_x(X_train_full)
             y_data = (y_train_full - self.y_min) / (self.y_max - self.y_min + 1e-8)
 
-            lr = FORWARD_LR
-            wd = FORWARD_WEIGHT_DECAY
-            epochs = FORWARD_EPOCHS
+            lr = float(self.config["forward_lr"])
+            wd = float(self.config["forward_weight_decay"])
+            epochs = int(self.config["forward_epochs"])
 
         elif mode == "inverse":
             inv_X = np.stack([self.raw_y, self.raw_X[:, 0]], axis=1)
@@ -226,17 +268,19 @@ class FertilizerSystem:
             X_data = self._norm_inverse_x(inv_X_train_full)
             y_data = self._norm_inverse_y(inv_y_train_full)
 
-            lr = INVERSE_LR
-            wd = INVERSE_WEIGHT_DECAY
-            epochs = INVERSE_EPOCHS
+            lr = float(self.config["inverse_lr"])
+            wd = float(self.config["inverse_weight_decay"])
+            epochs = int(self.config["inverse_epochs"])
         else:
             raise ValueError(f"未知模式: {mode}")
+
+        gamma = float(self.config.get("lr_gamma", 0.99))
 
         X_t = torch.tensor(X_data, dtype=torch.float32).to(self.device)
         y_t = torch.tensor(y_data, dtype=torch.float32).reshape(-1, 1).to(self.device)
 
         optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=LR_GAMMA)
+        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
         criterion = nn.MSELoss()
 
         model.train()
@@ -253,25 +297,6 @@ class FertilizerSystem:
 
         model.eval()
 
-    def _save_meta(self):
-        meta = {
-            "forward_model_class": "FertilizerKAN",
-            "forward_hidden_dim": FORWARD_HIDDEN_DIM,
-            "forward_lr": FORWARD_LR,
-            "forward_weight_decay": FORWARD_WEIGHT_DECAY,
-            "forward_epochs": FORWARD_EPOCHS,
-            "inverse_model_class": "InverseFertilizerKAN",
-            "inverse_hidden_dim": INVERSE_HIDDEN_DIM,
-            "inverse_lr": INVERSE_LR,
-            "inverse_weight_decay": INVERSE_WEIGHT_DECAY,
-            "inverse_epochs": INVERSE_EPOCHS,
-            "seed": DEFAULT_SEED,
-            "data_path": self.data_path,
-            "normalization_scope": "train+val",
-        }
-        with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump(meta, f, ensure_ascii=False, indent=2)
-
     def retrain_all(self):
         """强制重新训练所有模型"""
         print("\n>>> 开始重新训练所有模型...")
@@ -281,6 +306,9 @@ class FertilizerSystem:
         self._save_meta()
         print(">>> 所有模型已更新并保存！")
 
+    # =========================
+    # 业务接口
+    # =========================
     def predict_mass(self, opening, speed):
         """正向预测：开度/转速 -> 排肥量"""
         input_arr = np.array([[opening, speed]], dtype=np.float32)
@@ -315,13 +343,14 @@ def main():
         return
 
     while True:
-        print("\n" + "=" * 44)
-        print("   排肥控制系统 v2.0 (Paper-Aligned)")
-        print("=" * 44)
+        print("\n" + "=" * 48)
+        print("   排肥控制系统 v2.1 (Config-Driven)")
+        print("=" * 48)
         print("1. [正向预测] 开度/转速 -> 产量")
         print("2. [智能控制] 目标产量 -> 开度/转速")
         print("3. [系统维护] 重新训练模型")
-        print("4. 退出")
+        print("4. [系统维护] 查看当前配置")
+        print("5. 退出")
 
         choice = input("请输入选项: ").strip()
 
@@ -350,6 +379,9 @@ def main():
                 sys_ctrl.retrain_all()
 
         elif choice == "4":
+            sys_ctrl.show_config()
+
+        elif choice == "5":
             print("系统已退出。")
             break
 

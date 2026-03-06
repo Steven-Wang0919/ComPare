@@ -5,8 +5,10 @@
 - 统一使用 train/val/test 三分数据
 - 统一使用 0–1 归一化
 - 在验证集上调参：hidden_dim, lr, weight_decay
+- 统一随机种子，增强结果可复现性
 """
 
+import random
 import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
@@ -17,6 +19,27 @@ import torch.nn.functional as F
 import torch.optim as optim
 
 from common_utils import load_data, get_train_val_test_indices, mean_relative_error
+
+
+# =========================
+# 0. 随机种子控制
+# =========================
+def set_seed(seed=42):
+    """
+    统一设置 random / numpy / torch 的随机种子，
+    尽可能提高结果可复现性。
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
 
 
 # =========================
@@ -171,11 +194,14 @@ def train_and_eval_kan(
     search_epochs=300,
     gamma=0.99,
     save_csv_path="results_kan.csv",
+    seed=42,
 ):
+    set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print("\n=== 训练 KAN ===")
     print("Using:", device)
+    print("Random seed:", seed)
 
     if hidden_dim_candidates is None:
         hidden_dim_candidates = [4, 8, 16]
@@ -226,6 +252,8 @@ def train_and_eval_kan(
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
+                set_seed(seed)
+
                 model = FertilizerKAN(input_dim=2, hidden_dim=hidden_dim, output_dim=1).to(device)
                 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
                 scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
@@ -251,7 +279,11 @@ def train_and_eval_kan(
                     best_r2_val = r2_val
                     best_cfg = (hidden_dim, lr, wd)
 
-    print(f"KAN 最优超参数：hidden_dim={best_cfg[0]}, lr={best_cfg[1]}, weight_decay={best_cfg[2]}, val R²={best_r2_val:.6f}")
+    print(
+        f"KAN 最优超参数：hidden_dim={best_cfg[0]}, "
+        f"lr={best_cfg[1]}, weight_decay={best_cfg[2]}, "
+        f"val R²={best_r2_val:.6f}"
+    )
 
     # 5. 用 train+val 重新训练最终模型
     hidden_dim_best, lr_best, wd_best = best_cfg
@@ -260,6 +292,7 @@ def train_and_eval_kan(
     X_train_val_kan = torch.cat([X_train_kan, X_val_kan], dim=0)
     y_train_val_kan = torch.cat([y_train_kan, y_val_kan], dim=0)
 
+    set_seed(seed)
     model_final = FertilizerKAN(input_dim=2, hidden_dim=hidden_dim_best, output_dim=1).to(device)
     optimizer = optim.AdamW(model_final.parameters(), lr=lr_best, weight_decay=wd_best)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
@@ -275,7 +308,6 @@ def train_and_eval_kan(
         optimizer.step()
         scheduler.step()
 
-        # 仅使用验证集（此时已并入训练）会不再单独监控，这里只打印 loss
         if (epoch + 1) % 50 == 0:
             print(f"Epoch {epoch + 1}, Loss={loss.item():.6f}")
 
@@ -309,6 +341,7 @@ def train_and_eval_kan(
         "best_weight_decay": wd_best,
         "y_true": y_test_raw,
         "y_pred": y_pred_kan,
+        "seed": seed,
     }
 
 
