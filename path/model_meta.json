@@ -1,0 +1,15 @@
+{
+  "forward_model_class": "FertilizerKAN",
+  "forward_hidden_dim": 16,
+  "forward_lr": 0.005,
+  "forward_weight_decay": 1e-05,
+  "forward_epochs": 600,
+  "inverse_model_class": "InverseFertilizerKAN",
+  "inverse_hidden_dim": 16,
+  "inverse_lr": 0.005,
+  "inverse_weight_decay": 1e-05,
+  "inverse_epochs": 600,
+  "seed": 42,
+  "data_path": "data/dataset.xlsx",
+  "normalization_scope": "train+val"
+}
