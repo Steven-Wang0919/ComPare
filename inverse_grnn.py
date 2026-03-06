@@ -7,10 +7,9 @@
 训练 & 评估方式：
     - 数据划分使用 common_utils.get_train_val_test_indices
     - 归一化范围使用 train+val (train_full_idx)，统一和 KAN
-    - 内部拟合的是 y_norm (0~1)，评估时反归一化为真实转速
+    - 模型内部拟合的是 y_norm (0~1)，评估时反归一化为真实转速
     - 仅对“实际开度 == 策略开度”的 test 样本进行评估
-    - 在 train 上训练, 用 val 集 R² 选择最优 σ
-
+    - 在 train 上训练，用 val 集 R² 选择最优 σ
 """
 
 import numpy as np
@@ -49,7 +48,7 @@ class InverseGRNN:
     """
 
     def __init__(self, sigma: float = 1.0):
-        self.sigma = sigma
+        self.sigma = float(sigma)
         self.X = None
         self.y = None
 
@@ -59,19 +58,32 @@ class InverseGRNN:
         y: (n_samples,)    -> speed_norm
         """
         self.X = np.asarray(X, dtype=float)
-        self.y = np.asarray(y, dtype=float)
+        self.y = np.asarray(y, dtype=float).reshape(-1)
+
+        if self.X.ndim != 2:
+            raise ValueError("X 必须是二维数组，形状应为 (n_samples, n_features)")
+        if self.y.ndim != 1:
+            raise ValueError("y 必须是一维数组，形状应为 (n_samples,)")
+        if len(self.X) != len(self.y):
+            raise ValueError("X 和 y 的样本数必须一致")
+        if len(self.X) == 0:
+            raise ValueError("训练数据不能为空")
 
     def _predict_one(self, x):
         diff = self.X - x
         dist2 = np.sum(diff ** 2, axis=1)
-        w = np.exp(-dist2 / (2 * self.sigma ** 2))
+        w = np.exp(-dist2 / (2.0 * self.sigma ** 2))
+
         if w.sum() == 0.0:
-            # 退化情况：权重全 0 时，返回训练集 y_norm 均值
+            # 极端退化情况：权重全 0 时，返回训练集 y_norm 均值
             return float(self.y.mean())
+
         return float(np.sum(w * self.y) / w.sum())
 
     def predict(self, X):
         X = np.asarray(X, dtype=float)
+        if X.ndim == 1:
+            X = X.reshape(1, -1)
         return np.array([self._predict_one(x) for x in X], dtype=float)
 
 
@@ -90,20 +102,20 @@ if __name__ == "__main__":
 
     # 构造“反向问题”的输入输出
     # 输入: [质量, 开度]
-    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)  # (N, 2)
+    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)   # (N, 2)
     # 输出: [转速]
-    y_inv_all = X_raw[:, 1]                             # (N,)
+    y_inv_all = X_raw[:, 1]                              # (N,)
 
     # --- B. 使用 train+val 统计归一化参数（与 KAN 对齐） ---
     train_full_idx = np.concatenate([train_idx, val_idx])
 
-    X_train_full_raw = X_inv_all[train_full_idx]  # [mass, opening]
-    y_train_full_raw = y_inv_all[train_full_idx]  # speed
+    X_train_full_raw = X_inv_all[train_full_idx]   # [mass, opening]
+    y_train_full_raw = y_inv_all[train_full_idx]   # speed
 
     x_min = X_train_full_raw.min(axis=0, keepdims=True)
     x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = y_train_full_raw.min()
-    y_max = y_train_full_raw.max()
+    y_min = float(y_train_full_raw.min())
+    y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + 1e-8)
@@ -111,19 +123,22 @@ if __name__ == "__main__":
     def norm_y(y):
         return (y - y_min) / (y_max - y_min + 1e-8)
 
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + 1e-8) + y_min
 
     # --- C. 在 train/val 上选择最佳 σ（使用 val R²） ---
     sigma_grid = np.linspace(0.1, 4.0, 40)
 
-    # 只用 train 样本拟合, 在 val 上评估 R²
+    # 只用 train 样本拟合，在 val 上评估 R²
     X_train_raw = X_inv_all[train_idx]
-    y_train = y_inv_all[train_idx]
+    y_train_raw = y_inv_all[train_idx]
 
     X_val_raw = X_inv_all[val_idx]
-    y_val = y_inv_all[val_idx]
+    y_val_raw = y_inv_all[val_idx]
 
     X_train_norm = norm_x(X_train_raw)
     X_val_norm = norm_x(X_val_raw)
+    y_train_norm = norm_y(y_train_raw)
 
     best_sigma = None
     best_r2_val = -np.inf
@@ -131,19 +146,19 @@ if __name__ == "__main__":
     print(">>> 正在为反向 GRNN 选择最优 σ (基于 val R²) ...")
     for s in sigma_grid:
         model_tmp = InverseGRNN(sigma=s)
-        model_tmp.fit(X_train_norm, y_train)
+        model_tmp.fit(X_train_norm, y_train_norm)
 
-        # 在 val 集上评估拟合优度
-        y_val_pred = model_tmp.predict(X_val_norm)
-        r2_val = r2_score(y_val, y_val_pred)
+        # 先预测归一化转速，再反归一化到真实转速后评估
+        y_val_pred_norm = model_tmp.predict(X_val_norm)
+        y_val_pred_raw = denorm_y(y_val_pred_norm)
+
+        r2_val = r2_score(y_val_raw, y_val_pred_raw)
 
         if r2_val > best_r2_val:
             best_r2_val = r2_val
             best_sigma = s
 
     print(f"反向 GRNN 最优 σ = {best_sigma:.4f}, val R² = {best_r2_val:.6f}")
-
-    # --- D. 用 train+val 训练最终的反向 GRNN ---
 
     # --- D. 用 train+val 训练最终的反向 GRNN ---
     X_train_full_norm = norm_x(X_train_full_raw)
@@ -155,8 +170,8 @@ if __name__ == "__main__":
     # --- E. 在测试集上进行“策略一致性”评估 ---
     print("\n>>> 开始验证 (仅筛选符合策略的样本)...")
 
-    test_mass = y_raw[test_idx]        # 真实质量
-    test_opening = X_raw[test_idx, 0]  # 实际开度
+    test_mass = y_raw[test_idx]         # 真实质量
+    test_opening = X_raw[test_idx, 0]   # 实际开度
     test_speed_true = X_raw[test_idx, 1]
 
     valid_indices = []
@@ -181,10 +196,9 @@ if __name__ == "__main__":
         input_vec = np.stack([f_mass, f_op], axis=1)
         input_norm = norm_x(input_vec)
 
-        # 预测归一化转速
+        # 预测归一化转速 -> 反归一化为真实转速
         pred_spd_norm = inv_grnn.predict(input_norm)
-        # 反归一化得到真实转速
-        pred_spd = pred_spd_norm * (y_max - y_min + 1e-8) + y_min
+        pred_spd = denorm_y(pred_spd_norm)
 
         # 计算指标
         r2 = r2_score(f_spd_true, pred_spd)
