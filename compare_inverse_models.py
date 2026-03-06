@@ -11,7 +11,7 @@ compare_inverse_models.py
     - 数据：common_utils.load_data()
     - 划分：common_utils.get_train_val_test_indices()
     - 任务：输入 [目标质量, 开度]，输出 [转速]
-    - 归一化：输入/输出都使用 train+val 统计做 0–1 归一化
+    - 归一化：输入/输出都使用 train+val 统计做 0-1 归一化
     - 策略样本：只评估 “实际开度 == 策略开度” 的 test 样本
     - 指标：R²、平均相对误差 (MRS)
 
@@ -21,23 +21,38 @@ compare_inverse_models.py
 """
 
 import os
+import random
 import numpy as np
 import matplotlib
 import matplotlib.pyplot as plt
-
-from sklearn.metrics import r2_score
-
-from common_utils import load_data, get_train_val_test_indices, mean_relative_error
-from inverse_grnn import InverseGRNN  # 只用类，训练逻辑在本文件里写
-from inverse_mlp import train_and_eval_inverse_mlp
-from inverse_kan_V2 import InverseFertilizerKAN
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from sklearn.metrics import r2_score
+
+from common_utils import load_data, get_train_val_test_indices, mean_relative_error
+from inverse_grnn import InverseGRNN
+from inverse_mlp import train_and_eval_inverse_mlp
+from inverse_kan_V2 import InverseFertilizerKAN
+
+
 matplotlib.rcParams['font.sans-serif'] = ['SimHei', 'Microsoft YaHei', 'DejaVu Sans']
 matplotlib.rcParams['axes.unicode_minus'] = False
+
+
+# =============== 0. 固定随机种子，增强可复现性 ===============
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
 
 # =============== 公共策略（保持与各文件一致） ===============
 THRESHOLD_LOW_MID = 2800.0   # 20mm -> 35mm
@@ -74,14 +89,17 @@ def run_grnn(data_path="data/dataset.xlsx"):
 
     x_min = X_train_full_raw.min(axis=0, keepdims=True)
     x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = y_train_full_raw.min()
-    y_max = y_train_full_raw.max()
+    y_min = float(y_train_full_raw.min())
+    y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + 1e-8)
 
     def norm_y(y):
         return (y - y_min) / (y_max - y_min + 1e-8)
+
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + 1e-8) + y_min
 
     # --- C. 在 train 上训练，在 val 上用 R² 选 σ ---
     sigma_grid = np.linspace(0.1, 4.0, 40)
@@ -94,20 +112,19 @@ def run_grnn(data_path="data/dataset.xlsx"):
 
     X_train_norm = norm_x(X_train_raw)
     y_train_norm = norm_y(y_train_raw)
-
     X_val_norm = norm_x(X_val_raw)
-    # val 用原始 y 做 R²
+
     best_sigma = None
     best_r2_val = -np.inf
 
-    print(">>> 为 GRNN 选择最优 σ （基于 val R²）...")
+    print(">>> 为 GRNN 选择最优 σ（基于 val R²）...")
     for s in sigma_grid:
         model_tmp = InverseGRNN(sigma=s)
         model_tmp.fit(X_train_norm, y_train_norm)
 
-        # 在 val 集上预测 & 反归一化
+        # 在 val 集上预测归一化转速，再反归一化后评估
         y_val_pred_norm = model_tmp.predict(X_val_norm)
-        y_val_pred = y_val_pred_norm * (y_max - y_min + 1e-8) + y_min
+        y_val_pred = denorm_y(y_val_pred_norm)
 
         r2_val = r2_score(y_val_raw, y_val_pred)
         if r2_val > best_r2_val:
@@ -150,7 +167,7 @@ def run_grnn(data_path="data/dataset.xlsx"):
     input_norm = norm_x(input_vec)
 
     pred_spd_norm = grnn_final.predict(input_norm)
-    pred_spd = pred_spd_norm * (y_max - y_min + 1e-8) + y_min
+    pred_spd = denorm_y(pred_spd_norm)
 
     r2 = r2_score(f_spd_true, pred_spd)
     mrs = mean_relative_error(f_spd_true, pred_spd)
@@ -161,42 +178,43 @@ def run_grnn(data_path="data/dataset.xlsx"):
         "name": "GRNN",
         "r2": r2,
         "mrs": mrs,
-        "y_true": f_spd_true,
-        "y_pred": pred_spd,
-        "mass":  f_mass,
-        "residual": pred_spd - f_spd_true,
+        "y_true": np.asarray(f_spd_true),
+        "y_pred": np.asarray(pred_spd),
+        "mass": np.asarray(f_mass),
+        "residual": np.asarray(pred_spd) - np.asarray(f_spd_true),
     }
-
 
 
 # =============== 2. MLP：直接调用你已有的训练函数 ===============
 def run_mlp(data_path="data/dataset.xlsx"):
     print("\n=== 训练 & 评估 反向 MLP ===")
-    # 你的 inverse_mlp.train_and_eval_inverse_mlp 已经：
-    # - 使用相同的 get_train_val_test_indices
-    # - 使用 train+val 的归一化
-    # - 只在策略一致样本上评估
-    # - 返回 y_true_valid / y_pred_valid / r2 / mrs
+
+    # 要求 inverse_mlp.train_and_eval_inverse_mlp 返回:
+    # r2, mrs, y_true_valid, y_pred_valid, mass_valid
     res = train_and_eval_inverse_mlp(data_path=data_path)
     if res is None:
         print("MLP: 无有效测试样本。")
         return None
 
+    required_keys = ["r2", "mrs", "y_true_valid", "y_pred_valid", "mass_valid"]
+    for k in required_keys:
+        if k not in res:
+            raise KeyError(f"inverse_mlp 返回结果缺少必要字段: {k}")
+
     return {
         "name": "MLP",
         "r2": res["r2"],
         "mrs": res["mrs"],
-        "y_true": res["y_true_valid"],
-        "y_pred": res["y_pred_valid"],
-        # 这里需要在 inverse_mlp.train_and_eval_inverse_mlp 返回 mass
-        "mass": res["mass_valid"],
-        "residual": res["y_pred_valid"] - res["y_true_valid"],
+        "y_true": np.asarray(res["y_true_valid"]),
+        "y_pred": np.asarray(res["y_pred_valid"]),
+        "mass": np.asarray(res["mass_valid"]),
+        "residual": np.asarray(res["y_pred_valid"]) - np.asarray(res["y_true_valid"]),
     }
 
 
 # =============== 3. KAN V2：基于 inverse_kan_V2 的逻辑封装成函数 ===============
 def run_kan_v2(data_path="data/dataset.xlsx"):
-    print("\n=== 训练 & 评估 反向 KAN V2 ===")
+    print("\n=== 训练 & 评估 反向 KAN ===")
 
     X_raw, y_raw = load_data(data_path)
     n_samples = len(y_raw)
@@ -220,14 +238,17 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
 
     x_min = X_train_full_raw.min(axis=0, keepdims=True)
     x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = y_train_full_raw.min()
-    y_max = y_train_full_raw.max()
+    y_min = float(y_train_full_raw.min())
+    y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + 1e-8)
 
     def norm_y(y):
         return (y - y_min) / (y_max - y_min + 1e-8)
+
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + 1e-8) + y_min
 
     X_train_norm = norm_x(X_train_raw)
     X_val_norm = norm_x(X_val_raw)
@@ -241,7 +262,6 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
 
     X_train_t = torch.tensor(X_train_norm, dtype=torch.float32).to(device)
     y_train_t = torch.tensor(y_train_norm, dtype=torch.float32).view(-1, 1).to(device)
-
     X_val_t = torch.tensor(X_val_norm, dtype=torch.float32).to(device)
 
     # --- 超参搜索 ---
@@ -259,6 +279,8 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
+                set_seed(42)
+
                 model = InverseFertilizerKAN(
                     input_dim=2, hidden_dim=hidden_dim, output_dim=1
                 ).to(device)
@@ -275,11 +297,10 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
                     optimizer.step()
                     scheduler.step()
 
-                # 用 val 的真实转速 R² 选
                 model.eval()
                 with torch.no_grad():
                     pred_val_norm = model(X_val_t).cpu().numpy().reshape(-1)
-                y_val_pred = pred_val_norm * (y_max - y_min + 1e-8) + y_min
+                y_val_pred = denorm_y(pred_val_norm)
 
                 r2_val = r2_score(y_val_raw, y_val_pred)
                 print(
@@ -290,6 +311,9 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
                 if r2_val > best_r2_val:
                     best_r2_val = r2_val
                     best_cfg = (hidden_dim, lr, wd)
+
+    if best_cfg is None:
+        raise RuntimeError("KAN 超参搜索失败：best_cfg 为空")
 
     hidden_best, lr_best, wd_best = best_cfg
     print(
@@ -304,9 +328,11 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
     X_train_val_t = torch.tensor(X_train_val_norm, dtype=torch.float32).to(device)
     y_train_val_t = torch.tensor(y_train_val_norm, dtype=torch.float32).view(-1, 1).to(device)
 
+    set_seed(42)
     model_final = InverseFertilizerKAN(
         input_dim=2, hidden_dim=hidden_best, output_dim=1
     ).to(device)
+
     optimizer = optim.AdamW(model_final.parameters(), lr=lr_best, weight_decay=wd_best)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
     criterion = nn.MSELoss()
@@ -321,6 +347,7 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
         loss.backward()
         optimizer.step()
         scheduler.step()
+
         if (epoch + 1) % 100 == 0:
             print(f"  Epoch {epoch + 1}/{epochs_final}, Train Loss={loss.item():.6f}")
 
@@ -354,7 +381,7 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
     model_final.eval()
     with torch.no_grad():
         pred_norm = model_final(input_t).cpu().numpy().reshape(-1)
-    pred_spd = pred_norm * (y_max - y_min + 1e-8) + y_min
+    pred_spd = denorm_y(pred_norm)
 
     r2 = r2_score(f_spd_true, pred_spd)
     mrs = mean_relative_error(f_spd_true, pred_spd)
@@ -362,18 +389,50 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
     print(f"KAN: R²={r2:.4f}, MRS={mrs:.4f}% (样本数={len(valid_indices)})")
 
     return {
-        "name": "KAN_V2",
+        "name": "KAN",
         "r2": r2,
         "mrs": mrs,
-        "y_true": f_spd_true,
-        "y_pred": pred_spd,
-        "mass":  f_mass,
-        "residual": pred_spd - f_spd_true,
+        "y_true": np.asarray(f_spd_true),
+        "y_pred": np.asarray(pred_spd),
+        "mass": np.asarray(f_mass),
+        "residual": np.asarray(pred_spd) - np.asarray(f_spd_true),
     }
 
 
+# =============== 4. 结果一致性校验 ===============
+def validate_results_alignment(results, atol=1e-8):
+    """
+    强校验：三模型必须在同一批测试样本上比较
+    """
+    if len(results) <= 1:
+        return
 
-# =============== 4. 可视化函数 ===============
+    ref = results[0]
+    ref_true = np.asarray(ref["y_true"]).reshape(-1)
+    ref_mass = np.asarray(ref["mass"]).reshape(-1)
+
+    for r in results[1:]:
+        cur_true = np.asarray(r["y_true"]).reshape(-1)
+        cur_mass = np.asarray(r["mass"]).reshape(-1)
+
+        if len(cur_true) != len(ref_true):
+            raise ValueError(
+                f"模型 {r['name']} 与 {ref['name']} 的有效测试样本数不一致: "
+                f"{len(cur_true)} vs {len(ref_true)}"
+            )
+
+        if not np.allclose(cur_true, ref_true, atol=atol, rtol=0):
+            raise ValueError(
+                f"模型 {r['name']} 与 {ref['name']} 的 y_true 不一致，不能直接公平对比。"
+            )
+
+        if not np.allclose(cur_mass, ref_mass, atol=atol, rtol=0):
+            raise ValueError(
+                f"模型 {r['name']} 与 {ref['name']} 的 mass 不一致，说明筛样口径不同。"
+            )
+
+
+# =============== 5. 可视化函数 ===============
 def plot_metrics(results, out_dir):
     models = [r["name"] for r in results]
     r2s = [r["r2"] for r in results]
@@ -387,8 +446,8 @@ def plot_metrics(results, out_dir):
     axes[0].set_ylabel(r"$R^2$", fontsize=12)
 
     r2_min, r2_max = 0, max(r2s)
-    axes[0].set_ylim(r2_min, r2_max * 1.10)  # 顶部多留 10%
-    dy = (r2_max * 1.10 - r2_min) * 0.03     # 文本往上 3% 的高度
+    axes[0].set_ylim(r2_min, r2_max * 1.10 if r2_max > 0 else 1.0)
+    dy = (axes[0].get_ylim()[1] - axes[0].get_ylim()[0]) * 0.03
 
     for x, v in zip(models, r2s):
         axes[0].text(x, v + dy, f"{v:.3f}", ha="center", va="bottom", fontsize=10)
@@ -402,8 +461,9 @@ def plot_metrics(results, out_dir):
     axes[1].set_ylabel("MRS (%)", fontsize=12)
 
     mrs_min, mrs_max = 0, max(mrss)
-    axes[1].set_ylim(mrs_min, mrs_max * 1.20)
-    dy2 = (mrs_max * 1.20 - mrs_min) * 0.03
+    axes[1].set_ylim(mrs_min, mrs_max * 1.20 if mrs_max > 0 else 1.0)
+    dy2 = (axes[1].get_ylim()[1] - axes[1].get_ylim()[0]) * 0.03
+
     for x, v in zip(models, mrss):
         axes[1].text(x, v + dy2, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
 
@@ -417,7 +477,6 @@ def plot_metrics(results, out_dir):
     print(f"已保存指标对比图: {save_path}")
 
 
-
 def plot_scatter(results, out_dir):
     """三模型真实转速 vs 预测转速散点图（论文级）"""
     n = len(results)
@@ -426,7 +485,6 @@ def plot_scatter(results, out_dir):
     if n == 1:
         axes = [axes]
 
-    # 统一坐标范围
     all_true = np.concatenate([r["y_true"] for r in results])
     all_pred = np.concatenate([r["y_pred"] for r in results])
     vmin = min(all_true.min(), all_pred.min())
@@ -439,7 +497,6 @@ def plot_scatter(results, out_dir):
         ax.scatter(y_true, y_pred, s=30, alpha=0.8, edgecolors="none")
         ax.plot([vmin, vmax], [vmin, vmax], "k--", linewidth=1)
 
-        # ★ 这里用 $R^2$，而不是直接写 R²
         ax.set_title(
             f"{r['name']}  ($R^2$={r['r2']:.4f}, MRS={r['mrs']:.2f}%)",
             fontsize=13
@@ -455,14 +512,13 @@ def plot_scatter(results, out_dir):
     print(f"已保存散点对比图: {save_path}")
 
 
-
-# =============== 5. 主函数 ===============
+# =============== 6. 主函数 ===============
 def main():
-    # 输出目录
+    set_seed(42)
+
     out_dir = os.path.join(os.path.dirname(__file__), "ComPare_Pic")
     os.makedirs(out_dir, exist_ok=True)
 
-    # 运行三个模型
     res_grnn = run_grnn()
     res_mlp = run_mlp()
     res_kan = run_kan_v2()
@@ -473,12 +529,12 @@ def main():
         print("没有任何模型产生有效结果，无法绘图。")
         return
 
-    # 打印一个简洁表格
+    validate_results_alignment(results)
+
     print("\n===== 三模型指标汇总 =====")
     for r in results:
         print(f"{r['name']:<8} | R²={r['r2']:.4f} | MRS={r['mrs']:.4f}% | N={len(r['y_true'])}")
 
-    # 画图
     plot_metrics(results, out_dir)
     plot_scatter(results, out_dir)
 

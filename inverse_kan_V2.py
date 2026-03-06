@@ -10,12 +10,13 @@ inverse_kan_V2.py
 特性:
     - KANLayer 结构与 train_kan.py 中一致（input_grid + curve2coeff + B-spline）
     - 输入、输出全部进行 0–1 归一化
-      * 归一化范围使用 train+val (train_full_idx)，与其他反向模型保持一致风格
+      * 归一化范围使用 train+val (train_full_idx)，与其他反向模型保持一致
     - 在 train 上训练，在 val 上通过 R² 搜索超参（hidden_dim, lr, weight_decay）
     - 用最优超参在 train+val 上重新训练最终模型
     - 在 test 集上，仅对“实际开度 == 策略开度”的样本进行 R² / MRS 评估
 """
 
+import random
 import numpy as np
 from sklearn.metrics import r2_score
 
@@ -46,11 +47,22 @@ def select_optimal_opening(target_mass: float) -> float:
         return 50.0
 
 
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    if hasattr(torch.backends, "cudnn"):
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+
+
 # =========================
 # 2. KAN 基础层（同构版，参考 train_kan.py）
 # =========================
 class KANLayer(nn.Module):
-    # 默认 grid_size = 10
     def __init__(
         self,
         in_features,
@@ -70,18 +82,14 @@ class KANLayer(nn.Module):
         self.spline_order = spline_order
         self.base_activation = base_activation()
 
-        # 输入网格：每个输入维度一条 1D 网格
         self.input_grid = torch.einsum(
             "i,j->ij",
             torch.ones(in_features),
             torch.linspace(grid_range[0], grid_range[1], grid_size + 1),
         )
-        # 不参与训练
         self.input_grid = nn.Parameter(self.input_grid, requires_grad=False)
 
-        # 线性（基函数）权重
         self.base_weight = nn.Parameter(torch.Tensor(out_features, in_features))
-        # 样条部分权重
         self.spline_weight = nn.Parameter(
             torch.Tensor(out_features, in_features, grid_size + spline_order)
         )
@@ -93,33 +101,28 @@ class KANLayer(nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        # 线性部分初始化
         nn.init.kaiming_uniform_(self.base_weight, a=np.sqrt(5) * self.scale_base)
 
-        # 样条部分初始化
         with torch.no_grad():
             noise = (
                 torch.rand(self.grid_size + 1, self.in_features, self.out_features) - 0.5
             ) * self.scale_noise / self.grid_size
-            # noise: [grid+1, in_features, out_features]
             coeff = self.curve2coeff(self.input_grid, noise)
-            # coeff: [out_features, in_features, grid + spline_order]
             self.spline_weight.data.copy_(
                 (self.scale_spline if self.scale_spline is not None else 1.0) * coeff
             )
 
     def b_splines(self, x: torch.Tensor):
         """
-        x: [batch, in_features]，假定范围大致在 grid_range 内
-        返回样条基底值: [batch, in_features, grid_size + spline_order]
+        x: [batch, in_features]
+        返回: [batch, in_features, grid_size + spline_order]
         """
         assert x.dim() == 2 and x.size(1) == self.in_features
 
-        grid: torch.Tensor = self.input_grid  # [in_features, grid+1]
+        grid: torch.Tensor = self.input_grid
         h = (grid[:, -1:] - grid[:, 0:1]) / self.grid_size
         device = grid.device
 
-        # 左右 padding
         arange_left = torch.arange(
             self.spline_order, 0, -1, device=device, dtype=grid.dtype
         ).unsqueeze(0)
@@ -130,40 +133,35 @@ class KANLayer(nn.Module):
         ).unsqueeze(0)
         right_pad = grid[:, -1:] + arange_right * h
 
-        grid = torch.cat([left_pad, grid, right_pad], dim=1)  # [in_features, grid+1+2*order]
+        grid = torch.cat([left_pad, grid, right_pad], dim=1)
 
-        x = x.unsqueeze(-1)          # [B, in_features, 1]
-        grid = grid.unsqueeze(0)     # [1, in_features, G]
+        x = x.unsqueeze(-1)
+        grid = grid.unsqueeze(0)
 
-        # 0阶 B-spline：区间指示函数
         bases = ((x >= grid[:, :, :-1]) & (x < grid[:, :, 1:])).to(x.dtype)
 
-        # 递推构造高阶 B-spline
         for k in range(1, self.spline_order + 1):
-            denom1 = grid[:, :, k:-1] - grid[:, :, : -(k + 1)]
-            denom2 = grid[:, :, k + 1 :] - grid[:, :, 1:-k]
-            term1 = (x - grid[:, :, : -(k + 1)]) / denom1 * bases[:, :, :-1]
-            term2 = (grid[:, :, k + 1 :] - x) / denom2 * bases[:, :, 1:]
+            denom1 = grid[:, :, k:-1] - grid[:, :, :-(k + 1)]
+            denom2 = grid[:, :, k + 1:] - grid[:, :, 1:-k]
+            term1 = (x - grid[:, :, :-(k + 1)]) / (denom1 + 1e-12) * bases[:, :, :-1]
+            term2 = (grid[:, :, k + 1:] - x) / (denom2 + 1e-12) * bases[:, :, 1:]
             bases = term1 + term2
 
-        return bases.contiguous()  # [B, in_features, grid_size + spline_order]
+        return bases.contiguous()
 
     def curve2coeff(self, x: torch.Tensor, y: torch.Tensor):
         """
-        给定一条曲线 (x, y)，求样条系数
         x: [in_features, grid+1]
         y: [grid+1, in_features, out_features]
         """
-        A = self.b_splines(x.transpose(0, 1)).transpose(0, 1)  # [in_features, grid+1, grid+order]
-        B = y.transpose(0, 1)                                  # [in_features, grid+1, out_features]
-        solution = torch.linalg.lstsq(A, B).solution           # [in_features, grid+order, out_features]
-        result = solution.permute(2, 0, 1)                     # [out_features, in_features, grid+order]
+        A = self.b_splines(x.transpose(0, 1)).transpose(0, 1)
+        B = y.transpose(0, 1)
+        solution = torch.linalg.lstsq(A, B).solution
+        result = solution.permute(2, 0, 1)
         return result.contiguous()
 
     def forward(self, x: torch.Tensor):
-        # 线性部分
         base_out = F.linear(self.base_activation(x), self.base_weight)
-        # 样条部分
         spline_out = F.linear(
             self.b_splines(x).view(x.size(0), -1),
             self.spline_weight.view(self.out_features, -1),
@@ -194,9 +192,8 @@ class InverseFertilizerKAN(nn.Module):
 # =========================
 # 4. 训练 + 超参搜索 + 策略一致性评估
 # =========================
-if __name__ == "__main__":
-    torch.manual_seed(42)
-    np.random.seed(42)
+def train_and_eval_inverse_kan_v2(data_path="data/dataset.xlsx"):
+    set_seed(42)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("Using device:", device)
@@ -204,32 +201,34 @@ if __name__ == "__main__":
     # --- A. 数据加载 ---
     # X_raw: [开度(mm), 转速(r/min)]
     # y_raw: [质量(g/min)]
-    X_raw, y_raw = load_data()
+    X_raw, y_raw = load_data(data_path)
     n_samples = len(y_raw)
 
     idx_tr, idx_val, idx_te = get_train_val_test_indices(n_samples)
 
     # 反向问题：输入 [质量, 开度]，输出 [转速]
-    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)  # (N, 2)
-    y_inv_all = X_raw[:, 1]                             # (N,)
+    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
+    y_inv_all = X_raw[:, 1]
 
     X_train_raw = X_inv_all[idx_tr]
-    X_val_raw   = X_inv_all[idx_val]
-    X_test_raw  = X_inv_all[idx_te]
+    X_val_raw = X_inv_all[idx_val]
+    X_test_raw = X_inv_all[idx_te]
 
     y_train_raw = y_inv_all[idx_tr]
-    y_val_raw   = y_inv_all[idx_val]
-    y_test_raw  = y_inv_all[idx_te]
+    y_val_raw = y_inv_all[idx_val]
+    y_test_raw = y_inv_all[idx_te]
 
-    # --- B. 使用 train+val 统计归一化参数（与其它 inverse 模型统一风格） ---
+    _ = X_test_raw, y_test_raw
+
+    # --- B. 使用 train+val 统计归一化参数 ---
     train_full_idx = np.concatenate([idx_tr, idx_val])
     X_train_full_raw = X_inv_all[train_full_idx]
     y_train_full_raw = y_inv_all[train_full_idx]
 
     x_min = X_train_full_raw.min(axis=0, keepdims=True)
     x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = y_train_full_raw.min()
-    y_max = y_train_full_raw.max()
+    y_min = float(y_train_full_raw.min())
+    y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + 1e-8)
@@ -237,17 +236,15 @@ if __name__ == "__main__":
     def norm_y(y):
         return (y - y_min) / (y_max - y_min + 1e-8)
 
-    # 各子集归一化
-    X_train_norm = norm_x(X_train_raw)
-    X_val_norm   = norm_x(X_val_raw)
-    X_test_norm  = norm_x(X_test_raw)
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + 1e-8) + y_min
 
+    X_train_norm = norm_x(X_train_raw)
+    X_val_norm = norm_x(X_val_raw)
     y_train_norm = norm_y(y_train_raw)
-    y_val_norm   = norm_y(y_val_raw)
 
     X_train_t = torch.tensor(X_train_norm, dtype=torch.float32).to(device)
     y_train_t = torch.tensor(y_train_norm, dtype=torch.float32).view(-1, 1).to(device)
-
     X_val_t = torch.tensor(X_val_norm, dtype=torch.float32).to(device)
 
     # --- C. 超参数搜索 ---
@@ -266,6 +263,8 @@ if __name__ == "__main__":
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
+                set_seed(42)
+
                 model = InverseFertilizerKAN(
                     input_dim=2, hidden_dim=hidden_dim, output_dim=1
                 ).to(device)
@@ -273,7 +272,6 @@ if __name__ == "__main__":
                 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
                 scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
 
-                # 在 train 上训练 search_epochs 轮
                 for epoch in range(search_epochs):
                     model.train()
                     optimizer.zero_grad()
@@ -284,11 +282,10 @@ if __name__ == "__main__":
                     optimizer.step()
                     scheduler.step()
 
-                # 用 val 集评估：反归一化后计算 R²
                 model.eval()
                 with torch.no_grad():
                     pred_val_norm = model(X_val_t).cpu().numpy().reshape(-1)
-                y_val_pred = pred_val_norm * (y_max - y_min + 1e-8) + y_min
+                y_val_pred = denorm_y(pred_val_norm)
 
                 r2_val = r2_score(y_val_raw, y_val_pred)
 
@@ -300,6 +297,9 @@ if __name__ == "__main__":
                 if r2_val > best_r2_val:
                     best_r2_val = r2_val
                     best_cfg = (hidden_dim, lr, wd)
+
+    if best_cfg is None:
+        raise RuntimeError("反向 KAN 超参搜索失败：best_cfg 为空")
 
     print(
         f"\n>>> 反向 KAN 最优超参: "
@@ -316,9 +316,11 @@ if __name__ == "__main__":
     X_train_val_t = torch.tensor(X_train_val_norm, dtype=torch.float32).to(device)
     y_train_val_t = torch.tensor(y_train_val_norm, dtype=torch.float32).view(-1, 1).to(device)
 
+    set_seed(42)
     model_final = InverseFertilizerKAN(
         input_dim=2, hidden_dim=hidden_best, output_dim=1
     ).to(device)
+
     optimizer = optim.AdamW(model_final.parameters(), lr=lr_best, weight_decay=wd_best)
     scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
     criterion = nn.MSELoss()
@@ -341,14 +343,14 @@ if __name__ == "__main__":
     # --- E. 在 test 集上做“策略一致性”评估 ---
     print("\n>>> 开始在测试集上验证 (仅筛选符合策略的样本)...")
 
-    test_mass        = y_raw[idx_te]       # 真实质量
-    test_opening     = X_raw[idx_te, 0]    # 实际开度
-    test_speed_true  = X_raw[idx_te, 1]    # 实际转速
+    test_mass = y_raw[idx_te]
+    test_opening = X_raw[idx_te, 0]
+    test_speed_true = X_raw[idx_te, 1]
 
     valid_indices = []
 
     for i in range(len(test_mass)):
-        m       = float(test_mass[i])
+        m = float(test_mass[i])
         real_op = float(test_opening[i])
 
         strat_op = select_optimal_opening(m)
@@ -358,46 +360,60 @@ if __name__ == "__main__":
 
     if len(valid_indices) == 0:
         print("测试集中未找到符合当前策略 (20/35/50mm) 的样本。")
-    else:
-        f_mass      = test_mass[valid_indices]
-        f_op        = test_opening[valid_indices]
-        f_spd_true  = test_speed_true[valid_indices]
+        return None
 
-        # 构造输入并归一化
-        input_vec  = np.stack([f_mass, f_op], axis=1)
-        input_norm = norm_x(input_vec)
-        input_t    = torch.tensor(input_norm, dtype=torch.float32).to(device)
+    f_mass = test_mass[valid_indices]
+    f_op = test_opening[valid_indices]
+    f_spd_true = test_speed_true[valid_indices]
 
-        model_final.eval()
-        with torch.no_grad():
-            pred_norm = model_final(input_t).cpu().numpy().reshape(-1)
+    input_vec = np.stack([f_mass, f_op], axis=1)
+    input_norm = norm_x(input_vec)
+    input_t = torch.tensor(input_norm, dtype=torch.float32).to(device)
 
-        # 反归一化为真实转速
-        pred_spd = pred_norm * (y_max - y_min + 1e-8) + y_min
+    model_final.eval()
+    with torch.no_grad():
+        pred_norm = model_final(input_t).cpu().numpy().reshape(-1)
 
-        # 计算指标
-        r2  = r2_score(f_spd_true, pred_spd)
-        mrs = mean_relative_error(f_spd_true, pred_spd)
+    pred_spd = denorm_y(pred_norm)
 
+    r2 = r2_score(f_spd_true, pred_spd)
+    mrs = mean_relative_error(f_spd_true, pred_spd)
+
+    print(
+        f"\n===== 反向 KAN V2 (带超参搜索) - "
+        f"策略一致性样本评估 (共 {len(valid_indices)} 个) ====="
+    )
+    print(f"R² Score: {r2:.4f}")
+    print(f"平均相对误差 (MRS): {mrs:.4f}%")
+
+    print("\n[典型样本详情]")
+    print(
+        f"{'目标质量':<10} | {'策略开度':<10} | {'实际开度':<10} | "
+        f"{'预测转速':<10} | {'实际转速':<10} | {'误差(%)'}"
+    )
+    for k in range(min(5, len(f_mass))):
+        err = abs(pred_spd[k] - f_spd_true[k]) / (f_spd_true[k] + 1e-8) * 100
         print(
-            f"\n===== 反向 KAN V2 (带超参搜索) - "
-            f"策略一致性样本评估 (共 {len(valid_indices)} 个) ====="
+            f"{f_mass[k]:<10.1f} | "
+            f"{f_op[k]:<10.1f} | "
+            f"{f_op[k]:<10.1f} | "
+            f"{pred_spd[k]:<10.2f} | "
+            f"{f_spd_true[k]:<10.2f} | "
+            f"{err:.2f}%"
         )
-        print(f"R² Score: {r2:.4f}")
-        print(f"平均相对误差 (MRS): {mrs:.4f}%")
 
-        print("\n[典型样本详情]")
-        print(
-            f"{'目标质量':<10} | {'策略开度':<10} | {'实际开度':<10} | "
-            f"{'预测转速':<10} | {'实际转速':<10} | {'误差(%)'}"
-        )
-        for k in range(min(5, len(f_mass))):
-            err = abs(pred_spd[k] - f_spd_true[k]) / (f_spd_true[k] + 1e-8) * 100
-            print(
-                f"{f_mass[k]:<10.1f} | "
-                f"{f_op[k]:<10.1f} | "
-                f"{f_op[k]:<10.1f} | "
-                f"{pred_spd[k]:<10.2f} | "
-                f"{f_spd_true[k]:<10.2f} | "
-                f"{err:.2f}%"
-            )
+    return {
+        "r2": float(r2),
+        "mrs": float(mrs),
+        "best_hidden_dim": int(hidden_best),
+        "best_lr": float(lr_best),
+        "best_weight_decay": float(wd_best),
+        "n_valid": int(len(valid_indices)),
+        "y_true_valid": np.asarray(f_spd_true),
+        "y_pred_valid": np.asarray(pred_spd),
+        "mass_valid": np.asarray(f_mass),
+    }
+
+
+if __name__ == "__main__":
+    train_and_eval_inverse_kan_v2()

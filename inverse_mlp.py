@@ -19,9 +19,6 @@ inverse_mlp.py
     - 仅对“实际开度 == 策略开度”的样本评估
 """
 
-import warnings
-warnings.filterwarnings("ignore")
-
 import numpy as np
 from sklearn.neural_network import MLPRegressor
 from sklearn.metrics import r2_score
@@ -59,7 +56,19 @@ def train_and_eval_inverse_mlp(
     random_state=0,
 ):
     """
-    训练反向 MLP（带输出归一化），并在“策略一致性”样本上评估 R² 和 MRS
+    训练反向 MLP（带输入/输出归一化），并在“策略一致性”样本上评估 R² 和 MRS
+
+    返回:
+        {
+            "r2": float,
+            "mrs": float,
+            "best_hidden": tuple,
+            "best_alpha": float,
+            "n_valid": int,
+            "y_true_valid": np.ndarray,
+            "y_pred_valid": np.ndarray,
+            "mass_valid": np.ndarray,
+        }
     """
     if hidden_layer_candidates is None:
         hidden_layer_candidates = [
@@ -70,6 +79,11 @@ def train_and_eval_inverse_mlp(
         ]
     if alpha_candidates is None:
         alpha_candidates = [1e-6, 1e-5, 1e-4, 1e-3]
+
+    if len(hidden_layer_candidates) == 0:
+        raise ValueError("hidden_layer_candidates 不能为空")
+    if len(alpha_candidates) == 0:
+        raise ValueError("alpha_candidates 不能为空")
 
     print("\n=== 训练 反向 MLP (归一化版) ===")
 
@@ -82,16 +96,21 @@ def train_and_eval_inverse_mlp(
     idx_tr, idx_val, idx_te = get_train_val_test_indices(n_samples)
 
     # 构造“反向问题”的输入输出
-    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)  # [mass, opening]
-    y_inv_all = X_raw[:, 1]                             # speed
+    # 输入: [质量, 开度]
+    # 输出: 转速
+    X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
+    y_inv_all = X_raw[:, 1]
 
     X_train_raw = X_inv_all[idx_tr]
-    X_val_raw   = X_inv_all[idx_val]
-    X_test_raw  = X_inv_all[idx_te]
+    X_val_raw = X_inv_all[idx_val]
+    X_test_raw = X_inv_all[idx_te]
 
     y_train_raw = y_inv_all[idx_tr]
-    y_val_raw   = y_inv_all[idx_val]
-    y_test_raw  = y_inv_all[idx_te]
+    y_val_raw = y_inv_all[idx_val]
+    y_test_raw = y_inv_all[idx_te]
+
+    # 避免静态检查器提示变量未使用；这里保留是为了结构清晰
+    _ = X_test_raw, y_test_raw
 
     # --- B. 使用 train+val 统计归一化参数 ---
     train_full_idx = np.concatenate([idx_tr, idx_val])
@@ -100,8 +119,8 @@ def train_and_eval_inverse_mlp(
 
     X_min = X_train_full_raw.min(axis=0, keepdims=True)
     X_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = y_train_full_raw.min()
-    y_max = y_train_full_raw.max()
+    y_min = float(y_train_full_raw.min())
+    y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
         return (x - X_min) / (X_max - X_min + 1e-8)
@@ -109,19 +128,20 @@ def train_and_eval_inverse_mlp(
     def norm_y(y):
         return (y - y_min) / (y_max - y_min + 1e-8)
 
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + 1e-8) + y_min
+
     # 各子集归一化
     X_train = norm_x(X_train_raw)
-    X_val   = norm_x(X_val_raw)
-    X_test  = norm_x(X_test_raw)
-
+    X_val = norm_x(X_val_raw)
     y_train_norm = norm_y(y_train_raw)
-    y_val_norm   = norm_y(y_val_raw)
 
     # --- C. 在验证集上搜索 MLP 超参数 ---
     best_r2_val = -np.inf
     best_hidden = None
-    best_alpha  = None
+    best_alpha = None
 
+    print(">>> 开始为反向 MLP 搜索最优超参数（基于 val R²）...")
     for h in hidden_layer_candidates:
         for a in alpha_candidates:
             mlp = MLPRegressor(
@@ -135,17 +155,19 @@ def train_and_eval_inverse_mlp(
             # 拟合归一化 y
             mlp.fit(X_train, y_train_norm)
 
-            # 验证集预测 (norm)
+            # 验证集预测 (norm -> raw)
             y_val_pred_norm = mlp.predict(X_val)
-            # 反归一化回真实转速
-            y_val_pred = y_val_pred_norm * (y_max - y_min + 1e-8) + y_min
+            y_val_pred = denorm_y(y_val_pred_norm)
 
             r2_val = r2_score(y_val_raw, y_val_pred)
 
             if r2_val > best_r2_val:
                 best_r2_val = r2_val
                 best_hidden = h
-                best_alpha  = a
+                best_alpha = a
+
+    if best_hidden is None or best_alpha is None:
+        raise RuntimeError("反向 MLP 超参数搜索失败：best_hidden / best_alpha 为空")
 
     print(
         f"反向 MLP 最优超参数：hidden_layer_sizes={best_hidden}, "
@@ -172,14 +194,14 @@ def train_and_eval_inverse_mlp(
     print("\n>>> 开始验证 (仅筛选符合策略的样本)...")
 
     # test 集真实物理量
-    test_mass       = y_raw[idx_te]
-    test_opening    = X_raw[idx_te, 0]
+    test_mass = y_raw[idx_te]
+    test_opening = X_raw[idx_te, 0]
     test_speed_true = X_raw[idx_te, 1]
 
     valid_indices = []
 
     for i in range(len(test_mass)):
-        m       = float(test_mass[i])
+        m = float(test_mass[i])
         real_op = float(test_opening[i])
 
         strat_op = select_optimal_opening(m)
@@ -191,21 +213,20 @@ def train_and_eval_inverse_mlp(
         print("测试集中未找到符合当前策略 (20/35/50mm) 的样本。")
         return None
 
-    f_mass      = test_mass[valid_indices]
-    f_op        = test_opening[valid_indices]
-    f_spd_true  = test_speed_true[valid_indices]
+    f_mass = test_mass[valid_indices]
+    f_op = test_opening[valid_indices]
+    f_spd_true = test_speed_true[valid_indices]
 
     # 构造输入并归一化
-    input_vec  = np.stack([f_mass, f_op], axis=1)
+    input_vec = np.stack([f_mass, f_op], axis=1)
     input_norm = norm_x(input_vec)
 
-    # 预测归一化转速
+    # 预测归一化转速 -> 反归一化
     pred_spd_norm = mlp_final.predict(input_norm)
-    # 反归一化回真实转速
-    pred_spd = pred_spd_norm * (y_max - y_min + 1e-8) + y_min
+    pred_spd = denorm_y(pred_spd_norm)
 
     # 计算指标
-    r2  = r2_score(f_spd_true, pred_spd)
+    r2 = r2_score(f_spd_true, pred_spd)
     mrs = mean_relative_error(f_spd_true, pred_spd)
 
     print(f"\n===== 反向 MLP (归一化版) - 策略一致性样本评估 (共 {len(valid_indices)} 个) =====")
@@ -227,14 +248,14 @@ def train_and_eval_inverse_mlp(
         )
 
     return {
-        "r2": r2,
-        "mrs": mrs,
+        "r2": float(r2),
+        "mrs": float(mrs),
         "best_hidden": best_hidden,
         "best_alpha": best_alpha,
-        "n_valid": len(valid_indices),
-        "y_true_valid": f_spd_true,
-        "y_pred_valid": pred_spd,
-        "mass_valid": f_mass,
+        "n_valid": int(len(valid_indices)),
+        "y_true_valid": np.asarray(f_spd_true),
+        "y_pred_valid": np.asarray(pred_spd),
+        "mass_valid": np.asarray(f_mass),
     }
 
 
