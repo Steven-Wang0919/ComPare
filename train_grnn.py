@@ -5,18 +5,16 @@
 - 统一使用 train/val/test 三分数据
 - 统一使用 0–1 归一化（与 KAN 相同）
 - 在验证集上选择最优 σ
+- 误差指标统一使用平均相对误差（ARE）
 """
 
 import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
 
-from common_utils import load_data, get_train_val_test_indices, mean_relative_error
+from common_utils import load_data, get_train_val_test_indices, average_relative_error
 
 
-# =========================
-# GRNN 模型
-# =========================
 class GRNN:
     def __init__(self, sigma=1.0):
         self.sigma = sigma
@@ -45,10 +43,8 @@ def train_and_eval_grnn(
     if sigma_grid is None:
         sigma_grid = np.linspace(0.1, 4.0, 40)
 
-    # 1. 加载数据
     X, y = load_data(data_path)
 
-    # 2. 统一 train/val/test 划分
     idx_tr, idx_val, idx_te = get_train_val_test_indices(len(X))
     X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
     X_val_raw, y_val_raw = X[idx_val], y[idx_val]
@@ -56,7 +52,6 @@ def train_and_eval_grnn(
 
     print("\n=== 训练 GRNN ===")
 
-    # 3. 统一 0–1 归一化（仅用 train 的 min/max）
     X_min = X_train_raw.min(axis=0, keepdims=True)
     X_max = X_train_raw.max(axis=0, keepdims=True)
 
@@ -67,7 +62,6 @@ def train_and_eval_grnn(
     X_val = norm_x(X_val_raw)
     X_test = norm_x(X_test_raw)
 
-    # 4. 在验证集上选最佳 σ
     best_sigma = None
     best_r2_val = -np.inf
 
@@ -82,24 +76,22 @@ def train_and_eval_grnn(
 
     print(f"GRNN 最优 σ = {best_sigma}, val R² = {best_r2_val:.6f}")
 
-    # 5. 用 train+val 重新训练，并在 test 上评估
     X_train_val = np.vstack([X_train, X_val])
     y_train_val = np.hstack([y_train_raw, y_val_raw])
 
     g_final = GRNN(sigma=best_sigma)
     g_final.fit(X_train_val, y_train_val)
 
-    X_test = norm_x(X_test_raw)  # 仍用 train 的 min/max
+    X_test = norm_x(X_test_raw)
     y_pred_test = g_final.predict(X_test)
 
     grnn_r2 = r2_score(y_test_raw, y_pred_test)
-    grnn_mrs = mean_relative_error(y_test_raw, y_pred_test)
+    grnn_are = average_relative_error(y_test_raw, y_pred_test)
 
     print("\n===== GRNN 结果 =====")
     print(f"R²  = {grnn_r2:.6f}")
-    print(f"MRS = {grnn_mrs:.6f} %")
+    print(f"ARE = {grnn_are:.6f} %")
 
-    # 6. 保存预测
     df_out = pd.DataFrame({
         "true": y_test_raw,
         "GRNN_pred": y_pred_test,
@@ -109,7 +101,7 @@ def train_and_eval_grnn(
 
     return {
         "r2": grnn_r2,
-        "mrs": grnn_mrs,
+        "are": grnn_are,
         "best_sigma": best_sigma,
         "y_true": y_test_raw,
         "y_pred": y_pred_test,

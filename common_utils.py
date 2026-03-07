@@ -11,14 +11,23 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 
-def mean_relative_error(y_true, y_pred, eps=1e-8):
+def average_relative_error(y_true, y_pred, eps=1e-8):
     """
-    平均相对误差（百分比）
+    平均相对误差（ARE, 百分比）
+
+    定义：
+        RE_i  = |(y_i - y_pred_i) / y_i| * 100%
+        ARE   = mean(RE_i)
+
+    说明：
+    - 与施印炎等文中“相对误差 / 平均相对误差（ARE）”的写法对齐
+    - 为避免分母过小导致数值不稳定，对 |y_true| < eps 的项使用 eps 替代
     """
     y_true = np.asarray(y_true).reshape(-1)
     y_pred = np.asarray(y_pred).reshape(-1)
     denom = np.where(np.abs(y_true) < eps, eps, y_true)
-    return float(np.mean(np.abs((y_pred - y_true) / denom)) * 100.0)
+    re = np.abs((y_pred - y_true) / denom) * 100.0
+    return float(np.mean(re))
 
 
 def load_data(path="data/dataset.xlsx"):

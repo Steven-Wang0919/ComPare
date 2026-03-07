@@ -1,0 +1,64 @@
+{
+  "artifact_type": "inverse_model_bundle",
+  "model_name": "KAN",
+  "model_class": "InverseKANModel",
+  "weight_path": "path/kan_inverse.pth",
+  "data_path": "data/dataset.xlsx",
+  "seed": 42,
+  "task_definition": {
+    "input": [
+      "target_mass_g_min",
+      "opening_mm"
+    ],
+    "output": "speed_r_min",
+    "policy": "speed_first",
+    "strategy_opening_rule": {
+      "threshold_low_mid": 2800.0,
+      "threshold_mid_high": 4800.0,
+      "opening_low": 20.0,
+      "opening_mid": 35.0,
+      "opening_high": 50.0
+    }
+  },
+  "normalization_scope": {
+    "inverse": "train+val"
+  },
+  "hyperparameters": {
+    "hidden_dim": 32,
+    "lr": 0.01,
+    "weight_decay": 0.0,
+    "epochs": 1000
+  },
+  "validation_result": {
+    "best_val_r2": 0.9999574422836304
+  },
+  "normalization_params": {
+    "X_min": [
+      [
+        1144.270263671875,
+        20.0
+      ]
+    ],
+    "X_max": [
+      [
+        8234.0224609375,
+        50.0
+      ]
+    ],
+    "y_min": 20.0,
+    "y_max": 60.0
+  },
+  "training_domain": {
+    "target_mass_min": 1144.270263671875,
+    "target_mass_max": 8234.0224609375,
+    "opening_min": 20.0,
+    "opening_max": 50.0,
+    "speed_min": 20.0,
+    "speed_max": 60.0
+  },
+  "split_info": {
+    "train_size": 200,
+    "val_size": 43,
+    "test_size": 44
+  }
+}

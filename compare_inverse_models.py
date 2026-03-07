@@ -3,9 +3,9 @@
 compare_inverse_models.py
 
 对比三个“反向模型”：
-    - GRNN（inverse_grnn.train_and_eval_inverse_grnn）
-    - MLP  （inverse_mlp.train_and_eval_inverse_mlp）
-    - KAN  （inverse_kan_V2.train_and_eval_inverse_kan_v2）
+    - GRNN
+    - MLP
+    - KAN
 
 统一口径（与论文一致）：
     - 数据：common_utils.load_data()
@@ -14,7 +14,7 @@ compare_inverse_models.py
     - 归一化：输入/输出都使用 train+val 统计做 0-1 归一化
     - 主评估对象：策略一致子集（实际开度 == 策略开度）
     - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
-    - 指标：R²、平均相对误差 (MRS)
+    - 指标：R²、平均相对误差 (ARE)
 
 可视化（基于主结果）：
     - ComPare_Pic/metrics_bar.png
@@ -37,7 +37,6 @@ matplotlib.rcParams["font.sans-serif"] = ["SimHei", "Microsoft YaHei", "DejaVu S
 matplotlib.rcParams["axes.unicode_minus"] = False
 
 
-# =============== 0. 固定随机种子，增强可复现性 ===============
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -50,18 +49,13 @@ def set_seed(seed=42):
         torch.backends.cudnn.benchmark = False
 
 
-# =============== 1. 将各模型返回结果统一整理 ===============
 def standardize_result(model_name, res):
-    """
-    将各模型返回字典整理成统一格式。
-    要求前面三个脚本都已按新的“主结果/补充结果”接口改好。
-    """
     if res is None:
         return None
 
     required_keys = [
-        "r2_main", "mrs_main", "n_main",
-        "r2_all", "mrs_all", "n_all",
+        "r2_main", "are_main", "n_main",
+        "r2_all", "are_all", "n_all",
         "y_true_main", "y_pred_main", "mass_main",
         "y_true_all", "y_pred_all", "mass_all",
     ]
@@ -72,18 +66,16 @@ def standardize_result(model_name, res):
     return {
         "name": model_name,
 
-        # 主结果（论文主口径）
         "r2_main": float(res["r2_main"]) if not np.isnan(res["r2_main"]) else np.nan,
-        "mrs_main": float(res["mrs_main"]) if not np.isnan(res["mrs_main"]) else np.nan,
+        "are_main": float(res["are_main"]) if not np.isnan(res["are_main"]) else np.nan,
         "n_main": int(res["n_main"]),
         "y_true_main": np.asarray(res["y_true_main"]),
         "y_pred_main": np.asarray(res["y_pred_main"]),
         "mass_main": np.asarray(res["mass_main"]),
         "residual_main": np.asarray(res["y_pred_main"]) - np.asarray(res["y_true_main"]),
 
-        # 补充结果（全测试集）
         "r2_all": float(res["r2_all"]),
-        "mrs_all": float(res["mrs_all"]),
+        "are_all": float(res["are_all"]),
         "n_all": int(res["n_all"]),
         "y_true_all": np.asarray(res["y_true_all"]),
         "y_pred_all": np.asarray(res["y_pred_all"]),
@@ -92,7 +84,6 @@ def standardize_result(model_name, res):
     }
 
 
-# =============== 2. 调用三个反向模型 ===============
 def run_grnn(data_path="data/dataset.xlsx"):
     print("\n=== 训练 & 评估 反向 GRNN ===")
     res = train_and_eval_inverse_grnn(data_path=data_path)
@@ -111,12 +102,7 @@ def run_kan_v2(data_path="data/dataset.xlsx"):
     return standardize_result("KAN", res)
 
 
-# =============== 3. 主结果一致性校验 ===============
 def validate_results_alignment(results, atol=1e-8):
-    """
-    强校验：三模型主结果必须在同一批测试样本上比较
-    即：策略一致子集的 y_true / mass 必须一致
-    """
     if len(results) <= 1:
         return
 
@@ -145,15 +131,13 @@ def validate_results_alignment(results, atol=1e-8):
             )
 
 
-# =============== 4. 可视化函数（基于主结果） ===============
 def plot_metrics(results, out_dir):
     models = [r["name"] for r in results]
     r2s = [r["r2_main"] for r in results]
-    mrss = [r["mrs_main"] for r in results]
+    ares = [r["are_main"] for r in results]
 
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
 
-    # ----- R^2 -----
     axes[0].bar(models, r2s)
     axes[0].set_title(r"主结果：$R^2$ 对比", fontsize=14)
     axes[0].set_ylabel(r"$R^2$", fontsize=12)
@@ -168,16 +152,15 @@ def plot_metrics(results, out_dir):
     axes[0].tick_params(axis="both", labelsize=11)
     axes[0].grid(True, linestyle="--", alpha=0.3)
 
-    # ----- MRS -----
-    axes[1].bar(models, mrss)
-    axes[1].set_title("主结果：平均相对误差 MRS 对比", fontsize=14)
-    axes[1].set_ylabel("MRS (%)", fontsize=12)
+    axes[1].bar(models, ares)
+    axes[1].set_title("主结果：平均相对误差 ARE 对比", fontsize=14)
+    axes[1].set_ylabel("ARE (%)", fontsize=12)
 
-    mrs_min, mrs_max = 0, max(mrss) if len(mrss) > 0 else 1.0
-    axes[1].set_ylim(mrs_min, mrs_max * 1.20 if mrs_max > 0 else 1.0)
+    are_min, are_max = 0, max(ares) if len(ares) > 0 else 1.0
+    axes[1].set_ylim(are_min, are_max * 1.20 if are_max > 0 else 1.0)
     dy2 = (axes[1].get_ylim()[1] - axes[1].get_ylim()[0]) * 0.03
 
-    for x, v in zip(models, mrss):
+    for x, v in zip(models, ares):
         axes[1].text(x, v + dy2, f"{v:.2f}", ha="center", va="bottom", fontsize=10)
 
     axes[1].tick_params(axis="both", labelsize=11)
@@ -191,9 +174,6 @@ def plot_metrics(results, out_dir):
 
 
 def plot_scatter(results, out_dir):
-    """
-    三模型真实转速 vs 预测转速散点图（基于主结果）
-    """
     n = len(results)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 4), sharex=True, sharey=True)
 
@@ -213,7 +193,7 @@ def plot_scatter(results, out_dir):
         ax.plot([vmin, vmax], [vmin, vmax], "k--", linewidth=1)
 
         ax.set_title(
-            f"{r['name']}  ($R^2$={r['r2_main']:.4f}, MRS={r['mrs_main']:.2f}%)",
+            f"{r['name']}  ($R^2$={r['r2_main']:.4f}, ARE={r['are_main']:.2f}%)",
             fontsize=13
         )
         ax.set_xlabel("真实转速 (r/min)", fontsize=12)
@@ -227,14 +207,13 @@ def plot_scatter(results, out_dir):
     print(f"已保存主结果散点对比图: {save_path}")
 
 
-# =============== 5. 打印汇总 ===============
 def print_summary(results):
     print("\n===== 三模型主结果汇总（论文主口径：策略一致子集） =====")
     for r in results:
         print(
             f"{r['name']:<8} | "
             f"R²={r['r2_main']:.4f} | "
-            f"MRS={r['mrs_main']:.4f}% | "
+            f"ARE={r['are_main']:.4f}% | "
             f"N={r['n_main']}"
         )
 
@@ -243,12 +222,11 @@ def print_summary(results):
         print(
             f"{r['name']:<8} | "
             f"R²={r['r2_all']:.4f} | "
-            f"MRS={r['mrs_all']:.4f}% | "
+            f"ARE={r['are_all']:.4f}% | "
             f"N={r['n_all']}"
         )
 
 
-# =============== 6. 主函数 ===============
 def main():
     set_seed(42)
 
@@ -265,7 +243,6 @@ def main():
         print("没有任何模型产生有效结果，无法绘图。")
         return
 
-    # 只保留有主评估样本的模型
     results = [r for r in results if r["n_main"] > 0]
     if len(results) == 0:
         print("所有模型的主评估样本数都为 0，无法进行公平对比。")
