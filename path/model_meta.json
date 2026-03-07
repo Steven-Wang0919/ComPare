@@ -3,5 +3,6 @@
   "data_path": "data/dataset.xlsx",
   "enable_range_warning": true,
   "enable_output_clipping": true,
-  "prefer_saved_artifacts": true
+  "prefer_saved_artifacts": true,
+  "strict_artifact_mode": true
 }

@@ -264,7 +264,7 @@ def train_and_eval_kan(
 
     X, y = load_data(data_path)
 
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(len(X))
+    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
     X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
     X_val_raw, y_val_raw = X[idx_val], y[idx_val]
     X_test_raw, y_test_raw = X[idx_te], y[idx_te]

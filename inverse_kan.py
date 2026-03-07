@@ -2,7 +2,7 @@
 """
 inverse_kan.py
 
-反向 KAN 模型（输入+输出 0-1 归一化）：
+反向 KAN 模型（严格披露版）：
     输入:  [目标质量 (g/min), 排肥口开度 (mm)]
     输出:  [排肥轴转速 (r/min)]
 
@@ -14,6 +14,17 @@ inverse_kan.py
 因此：
     - 主评估对象：满足“实际开度 == 策略开度”的测试样本（策略一致子集）
     - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
+
+本版修订重点：
+1. 保留原有训练与保存工件流程
+2. 显式报告：
+   - 主结果样本数 n_main
+   - 全测试集样本数 n_all
+   - 主结果占比 main_ratio
+   - 主结果与全测试集的 R² / ARE 并列输出
+3. 增加策略一致子集在不同开度上的样本分布
+4. 对极小样本时的 R² / ARE 做安全处理
+5. 返回更完整的结果字典，便于 compare / 论文表格 / 附录复用
 """
 
 import json
@@ -25,6 +36,15 @@ import torch.nn as nn
 from sklearn.metrics import r2_score
 
 from common_utils import load_data, get_train_val_test_indices, average_relative_error
+
+
+THRESHOLD_LOW_MID = 2800.0
+THRESHOLD_MID_HIGH = 4800.0
+EPS = 1e-8
+
+DEFAULT_ARTIFACT_DIR = "path"
+DEFAULT_WEIGHT_FILENAME = "kan_inverse.pth"
+DEFAULT_META_FILENAME = "kan_inverse_meta.json"
 
 
 def set_seed(seed=42):
@@ -39,14 +59,6 @@ def set_seed(seed=42):
         torch.backends.cudnn.benchmark = False
 
 
-THRESHOLD_LOW_MID = 2800.0
-THRESHOLD_MID_HIGH = 4800.0
-
-DEFAULT_ARTIFACT_DIR = "path"
-DEFAULT_WEIGHT_FILENAME = "kan_inverse.pth"
-DEFAULT_META_FILENAME = "kan_inverse_meta.json"
-
-
 def select_optimal_opening(target_mass: float) -> float:
     if target_mass < THRESHOLD_LOW_MID:
         return 20.0
@@ -56,7 +68,42 @@ def select_optimal_opening(target_mass: float) -> float:
         return 50.0
 
 
+def _safe_r2(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if len(y_true) < 2:
+        return np.nan
+    if np.allclose(y_true, y_true[0]):
+        return np.nan
+    return float(r2_score(y_true, y_pred))
+
+
+def _safe_are(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if len(y_true) == 0:
+        return np.nan
+    return float(average_relative_error(y_true, y_pred))
+
+
+def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
+    openings = np.asarray(openings, dtype=float)
+    stats = {}
+    for v in opening_values:
+        stats[f"{int(v)}mm"] = int(np.isclose(openings, v, atol=atol).sum())
+    stats["other"] = int(
+        len(openings)
+        - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
+    )
+    return stats
+
+
 class KANLayer(nn.Module):
+    """
+    说明：
+    当前实现保留作者原始结构，不在这一步修改模型名实一致性问题。
+    若后续要进一步严格审稿整改，可单独把“反向 KAN”重命名为更准确的结构名称。
+    """
     def __init__(self, in_dim, out_dim):
         super().__init__()
         self.linear = nn.Linear(in_dim, out_dim)
@@ -276,14 +323,17 @@ def train_and_eval_inverse_kan_v2(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("\n=== 训练 反向 KAN（归一化版，转速优先口径） ===")
+    print("\n=== 训练 反向 KAN（严格披露版，转速优先口径） ===")
     print(f"使用设备: {device}")
 
     X_raw, y_raw = load_data(data_path)
 
     n_samples = len(y_raw)
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(n_samples)
+    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
 
+    # 反向任务：
+    # 输入 = [目标质量, 开度]
+    # 输出 = 转速
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
@@ -294,7 +344,9 @@ def train_and_eval_inverse_kan_v2(
     y_train_raw = y_inv_all[idx_tr]
     y_val_raw = y_inv_all[idx_val]
     y_test_raw = y_inv_all[idx_te]
+    _ = y_test_raw  # 保留变量语义，避免静态检查提示
 
+    # 与作者当前口径一致：反向归一化统计量使用 train+val
     train_full_idx = np.concatenate([idx_tr, idx_val])
     X_train_full_raw = X_inv_all[train_full_idx]
     y_train_full_raw = y_inv_all[train_full_idx]
@@ -305,13 +357,13 @@ def train_and_eval_inverse_kan_v2(
     y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
-        return (x - x_min) / (x_max - x_min + 1e-8)
+        return (x - x_min) / (x_max - x_min + EPS)
 
     def norm_y(y):
-        return (y - y_min) / (y_max - y_min + 1e-8)
+        return (y - y_min) / (y_max - y_min + EPS)
 
     def denorm_y(y_norm):
-        return y_norm * (y_max - y_min + 1e-8) + y_min
+        return y_norm * (y_max - y_min + EPS) + y_min
 
     X_train = norm_x(X_train_raw)
     X_val = norm_x(X_val_raw)
@@ -325,7 +377,7 @@ def train_and_eval_inverse_kan_v2(
     best_lr = None
     best_weight_decay = None
 
-    print(">>> 开始搜索反向 KAN 最优超参数（基于 val R²）...")
+    print(">>> 开始搜索反向 KAN 最优超参数（基于 val R²，归一化空间）...")
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
@@ -386,9 +438,12 @@ def train_and_eval_inverse_kan_v2(
 
     pred_test_speed = denorm_y(pred_test_norm)
 
-    r2_all = r2_score(test_speed_true, pred_test_speed)
-    are_all = average_relative_error(test_speed_true, pred_test_speed)
+    # 全测试集指标
+    r2_all = _safe_r2(test_speed_true, pred_test_speed)
+    are_all = _safe_are(test_speed_true, pred_test_speed)
+    n_all = int(len(test_speed_true))
 
+    # 策略一致子集
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
         dtype=float
@@ -396,6 +451,7 @@ def train_and_eval_inverse_kan_v2(
     policy_mask = np.isclose(test_opening, strategy_opening_all, atol=0.1)
 
     n_main = int(policy_mask.sum())
+    main_ratio = float(n_main / n_all) if n_all > 0 else np.nan
 
     if n_main > 0:
         mass_main = test_mass[policy_mask]
@@ -404,8 +460,8 @@ def train_and_eval_inverse_kan_v2(
         y_true_main = test_speed_true[policy_mask]
         y_pred_main = pred_test_speed[policy_mask]
 
-        r2_main = r2_score(y_true_main, y_pred_main)
-        are_main = average_relative_error(y_true_main, y_pred_main)
+        r2_main = _safe_r2(y_true_main, y_pred_main)
+        are_main = _safe_are(y_true_main, y_pred_main)
     else:
         mass_main = np.array([], dtype=float)
         opening_main = np.array([], dtype=float)
@@ -415,13 +471,46 @@ def train_and_eval_inverse_kan_v2(
         r2_main = np.nan
         are_main = np.nan
 
+    # 分布披露：全测试集 / 主结果子集的开度分布
+    opening_dist_all = _count_openings(test_opening)
+    opening_dist_main = _count_openings(opening_main)
+
     print("\n===== 反向 KAN（转速优先口径）测试结果 =====")
     if n_main > 0:
-        print(f"主结果（策略一致子集）: n = {n_main:3d}, R² = {r2_main:.4f}, ARE = {are_main:.4f}%")
+        print(
+            f"主结果（策略一致子集）: n = {n_main:3d} / {n_all:3d} "
+            f"({main_ratio * 100:.2f}%), R² = {r2_main:.4f}, ARE = {are_main:.4f}%"
+        )
     else:
-        print("主结果（策略一致子集）: n =   0, R² = NaN, ARE = NaN")
+        print(
+            f"主结果（策略一致子集）: n =   0 / {n_all:3d} "
+            f"(0.00%), R² = NaN, ARE = NaN"
+        )
 
-    print(f"补充结果（全测试集）  : n = {len(test_speed_true):3d}, R² = {r2_all:.4f}, ARE = {are_all:.4f}%")
+    print(
+        f"补充结果（全测试集）  : n = {n_all:3d}, "
+        f"R² = {r2_all:.4f}, ARE = {are_all:.4f}%"
+    )
+
+    print("\n--- 开度分布披露 ---")
+    print(
+        "全测试集开度分布: "
+        f"20mm={opening_dist_all['20mm']}, "
+        f"35mm={opening_dist_all['35mm']}, "
+        f"50mm={opening_dist_all['50mm']}, "
+        f"other={opening_dist_all['other']}"
+    )
+    print(
+        "主结果子集开度分布: "
+        f"20mm={opening_dist_main['20mm']}, "
+        f"35mm={opening_dist_main['35mm']}, "
+        f"50mm={opening_dist_main['50mm']}, "
+        f"other={opening_dist_main['other']}"
+    )
+
+    print("\n--- 结果解释建议 ---")
+    print("主结果基于‘实际开度 = 策略推荐开度’的测试样本。")
+    print("为避免选择性报告，应始终与全测试集结果并列呈现，并说明主结果样本占比。")
 
     model_path = None
     meta_path = None
@@ -453,32 +542,44 @@ def train_and_eval_inverse_kan_v2(
         )
 
     return {
+        # 主结果
         "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,
         "are_main": float(are_main) if not np.isnan(are_main) else np.nan,
         "n_main": n_main,
+        "main_ratio": float(main_ratio) if not np.isnan(main_ratio) else np.nan,
 
-        "r2_all": float(r2_all),
-        "are_all": float(are_all),
-        "n_all": int(len(test_speed_true)),
+        # 全测试集
+        "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
+        "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
+        "n_all": n_all,
 
+        # 最优超参数
         "best_hidden_dim": int(best_hidden_dim),
         "best_lr": float(best_lr),
         "best_weight_decay": float(best_weight_decay),
 
+        # 全测试集明细
         "y_true_all": np.asarray(test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
         "opening_all": np.asarray(test_opening),
         "strategy_opening_all": np.asarray(strategy_opening_all),
 
+        # 主结果子集明细
         "y_true_main": np.asarray(y_true_main),
         "y_pred_main": np.asarray(y_pred_main),
         "mass_main": np.asarray(mass_main),
         "opening_main": np.asarray(opening_main),
         "strategy_opening_main": np.asarray(strategy_opening_main),
 
+        # 策略一致掩码
         "policy_mask": np.asarray(policy_mask),
 
+        # 分布披露
+        "opening_dist_all": opening_dist_all,
+        "opening_dist_main": opening_dist_main,
+
+        # 工件信息
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,
     }

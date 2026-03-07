@@ -1,16 +1,14 @@
 # -*- coding: utf-8 -*-
 """
-排肥系统交互控制终端（优先消费训练工件，精简配置版）
+排肥系统交互控制终端（严格工件模式版）
 
-功能：
-1. 自动在代码同级目录下创建 'path' 文件夹
-2. 启动时优先从 'path' 文件夹加载模型
-3. 优先读取训练脚本落盘的 forward / inverse 工件元数据
-4. 若工件缺失，则回退到“从原始数据重算归一化参数 + fallback 训练参数”的旧逻辑
-5. 正向模型使用 train_kan.py 中的 FertilizerKAN
-6. 反向模型使用 inverse_kan.py 中的 InverseKANModel
-7. 正向模型归一化参数基于 train；反向模型归一化参数基于 train+val
-8. 增加输入越界检查、外推告警与输出裁剪，提升交互系统稳健性
+修订原则：
+1. 启动时优先且默认必须消费训练工件
+2. 若工件缺失 / 元数据损坏 / 权重不匹配，则直接报错退出
+3. 禁止在启动阶段静默自动重训练，避免部署模型与论文模型漂移
+4. 仅当用户在菜单中显式选择“重新训练模型”时，才允许训练
+5. 保留输入越界检查、外推告警、输出裁剪
+6. 返回原始预测值和裁剪后预测值，避免后处理掩盖模型真实性能
 """
 
 import json
@@ -44,9 +42,11 @@ DEFAULT_CONFIG = {
     "enable_range_warning": True,
     "enable_output_clipping": True,
     "prefer_saved_artifacts": True,
+    # 新增：严格模式下，启动必须要求工件完整可用
+    "strict_artifact_mode": True,
 }
 
-# 仅用于“工件缺失时的回退训练”
+# 仅用于“用户显式触发重训练”时
 FALLBACK_MODEL_PARAMS = {
     "forward_hidden_dim": 16,
     "forward_lr": 0.005,
@@ -88,21 +88,24 @@ class FertilizerSystem:
 
         self.data_path = self.config["data_path"]
 
-        # 运行期模型参数：优先由工件恢复；否则使用 fallback
+        # 运行期模型参数：优先由工件恢复；否则使用 fallback（仅供显式重训练时使用）
         self.model_params = dict(FALLBACK_MODEL_PARAMS)
 
         # 标记是否成功从工件恢复
         self.loaded_forward_artifact = False
         self.loaded_inverse_artifact = False
 
-        # 1. 优先从工件恢复归一化参数与边界；若失败则回退到原始数据重算
+        # 是否为显式重训练模式
+        self.allow_training_fallback = False
+
+        # 初始化运行态：严格优先工件
         self._init_runtime_state()
 
-        # 2. 获取模型（优先加载，否则训练）
+        # 获取模型：默认只允许加载，不允许自动训练
         self.forward_model = self._get_forward_model()
         self.inverse_model = self._get_inverse_model()
 
-        # 3. 保存精简后的系统配置
+        # 保存精简后的系统配置
         self._save_meta()
 
         print("\n>>> 系统就绪！当前系统配置已保存至 path/model_meta.json")
@@ -118,7 +121,6 @@ class FertilizerSystem:
                 with open(META_PATH, "r", encoding="utf-8") as f:
                     loaded = json.load(f)
                 if isinstance(loaded, dict):
-                    # 只接受 DEFAULT_CONFIG 中定义的键，自动忽略历史冗余字段
                     for k in DEFAULT_CONFIG.keys():
                         if k in loaded:
                             config[k] = loaded[k]
@@ -134,7 +136,6 @@ class FertilizerSystem:
         return config
 
     def _save_meta(self):
-        # 只保存精简后的交互配置
         clean_config = {k: self.config[k] for k in DEFAULT_CONFIG.keys()}
         with open(META_PATH, "w", encoding="utf-8") as f:
             json.dump(clean_config, f, ensure_ascii=False, indent=2)
@@ -151,31 +152,48 @@ class FertilizerSystem:
         print(f"inverse_weight_exists: {os.path.exists(MODEL_INV_PATH)}")
         print(f"forward_meta_exists: {os.path.exists(FORWARD_META_PATH)}")
         print(f"inverse_meta_exists: {os.path.exists(INVERSE_META_PATH)}")
+        print(f"allow_training_fallback: {self.allow_training_fallback}")
 
         print("\n===== 当前模型参数（运行期） =====")
         for k, v in self.model_params.items():
             print(f"{k}: {v}")
 
     # =========================
-    # 初始化运行态：优先工件，回退原始数据
+    # 初始化运行态：严格优先工件
     # =========================
     def _init_runtime_state(self):
         prefer_artifacts = bool(self.config.get("prefer_saved_artifacts", True))
+        strict_mode = bool(self.config.get("strict_artifact_mode", True))
 
-        if prefer_artifacts:
-            fwd_ok = self._try_load_forward_artifact()
-            inv_ok = self._try_load_inverse_artifact()
+        if not prefer_artifacts:
+            if strict_mode:
+                raise RuntimeError(
+                    "当前配置不允许跳过工件加载（strict_artifact_mode=True），"
+                    "请开启 prefer_saved_artifacts 或关闭严格模式。"
+                )
+            print("当前未启用工件优先，将回退到原始数据重算归一化参数。")
+            self._init_data_params_from_raw_data(self.data_path)
+            return
 
-            if fwd_ok and inv_ok:
-                print("已从 forward / inverse 工件恢复归一化参数与训练域边界。")
-                return
+        fwd_ok = self._try_load_forward_artifact()
+        inv_ok = self._try_load_inverse_artifact()
 
-            print("工件恢复不完整，回退到原始数据重算归一化参数。")
+        if fwd_ok and inv_ok:
+            print("已从 forward / inverse 工件恢复归一化参数与训练域边界。")
+            return
 
+        if strict_mode:
+            raise RuntimeError(
+                "工件恢复失败：系统要求 forward / inverse 工件完整可用，"
+                "为避免部署模型与论文模型漂移，已禁止启动阶段自动重训练。"
+            )
+
+        print("工件恢复不完整，且严格模式已关闭，回退到原始数据重算归一化参数。")
         self._init_data_params_from_raw_data(self.data_path)
 
     def _try_load_forward_artifact(self):
         if not os.path.exists(FORWARD_META_PATH):
+            print(f"缺少正向元数据文件: {FORWARD_META_PATH}")
             return False
 
         try:
@@ -212,12 +230,13 @@ class FertilizerSystem:
             return True
 
         except Exception as e:
-            print(f"读取正向工件失败（{e}），将回退到原始数据。")
+            print(f"读取正向工件失败（{e}）。")
             self.loaded_forward_artifact = False
             return False
 
     def _try_load_inverse_artifact(self):
         if not os.path.exists(INVERSE_META_PATH):
+            print(f"缺少反向元数据文件: {INVERSE_META_PATH}")
             return False
 
         try:
@@ -254,12 +273,12 @@ class FertilizerSystem:
             return True
 
         except Exception as e:
-            print(f"读取反向工件失败（{e}），将回退到原始数据。")
+            print(f"读取反向工件失败（{e}）。")
             self.loaded_inverse_artifact = False
             return False
 
     # =========================
-    # 回退逻辑：从原始数据重算
+    # 回退逻辑：仅用于显式重训练
     # =========================
     def _init_data_params_from_raw_data(self, path):
         print(f"正在读取数据: {path} ...")
@@ -406,48 +425,70 @@ class FertilizerSystem:
     def _get_forward_model(self, force_retrain=False):
         model = self._build_forward_model()
 
-        if os.path.exists(MODEL_FWD_PATH) and not force_retrain:
-            print(f"[- 正向模型] 从 {MODEL_FWD_PATH} 加载...")
-            try:
-                model.load_state_dict(torch.load(MODEL_FWD_PATH, map_location=self.device))
-                model.eval()
-                return model
-            except Exception as e:
-                print(f"加载失败（{e}），准备重新训练...")
+        if force_retrain:
+            print("[- 正向模型] 显式触发重训练...")
+            self._train_model_process(model, mode="forward")
+            torch.save(model.state_dict(), MODEL_FWD_PATH)
+            print(f"   模型已保存至 -> {MODEL_FWD_PATH}")
+            model.eval()
+            return model
 
-        print("[- 正向模型] 正在训练...")
-        self._train_model_process(model, mode="forward")
-        torch.save(model.state_dict(), MODEL_FWD_PATH)
-        print(f"   模型已保存至 -> {MODEL_FWD_PATH}")
-        return model
+        if not os.path.exists(MODEL_FWD_PATH):
+            raise FileNotFoundError(
+                f"缺少正向权重文件: {MODEL_FWD_PATH}。"
+                "系统已禁止启动阶段自动重训练，请先通过训练脚本生成工件，"
+                "或在菜单中显式选择重新训练。"
+            )
+
+        print(f"[- 正向模型] 从 {MODEL_FWD_PATH} 加载...")
+        try:
+            model.load_state_dict(torch.load(MODEL_FWD_PATH, map_location=self.device))
+            model.eval()
+            return model
+        except Exception as e:
+            raise RuntimeError(
+                f"正向模型权重加载失败: {e}。"
+                "系统已禁止启动阶段自动重训练，以避免部署模型与论文模型不一致。"
+            )
 
     def _get_inverse_model(self, force_retrain=False):
         model = self._build_inverse_model()
 
-        if os.path.exists(MODEL_INV_PATH) and not force_retrain:
-            print(f"[- 反向模型] 从 {MODEL_INV_PATH} 加载...")
-            try:
-                model.load_state_dict(torch.load(MODEL_INV_PATH, map_location=self.device))
-                model.eval()
-                return model
-            except Exception as e:
-                print(f"加载失败（{e}），准备重新训练...")
+        if force_retrain:
+            print("[- 反向模型] 显式触发重训练...")
+            self._train_model_process(model, mode="inverse")
+            torch.save(model.state_dict(), MODEL_INV_PATH)
+            print(f"   模型已保存至 -> {MODEL_INV_PATH}")
+            model.eval()
+            return model
 
-        print("[- 反向模型] 正在训练...")
-        self._train_model_process(model, mode="inverse")
-        torch.save(model.state_dict(), MODEL_INV_PATH)
-        print(f"   模型已保存至 -> {MODEL_INV_PATH}")
-        return model
+        if not os.path.exists(MODEL_INV_PATH):
+            raise FileNotFoundError(
+                f"缺少反向权重文件: {MODEL_INV_PATH}。"
+                "系统已禁止启动阶段自动重训练，请先通过训练脚本生成工件，"
+                "或在菜单中显式选择重新训练。"
+            )
+
+        print(f"[- 反向模型] 从 {MODEL_INV_PATH} 加载...")
+        try:
+            model.load_state_dict(torch.load(MODEL_INV_PATH, map_location=self.device))
+            model.eval()
+            return model
+        except Exception as e:
+            raise RuntimeError(
+                f"反向模型权重加载失败: {e}。"
+                "系统已禁止启动阶段自动重训练，以避免部署模型与论文模型不一致。"
+            )
 
     def _train_model_process(self, model, mode="forward"):
         """
-        回退训练逻辑：
-        当缺少可用工件时，使用原始数据按论文实验口径训练。
+        仅用于用户显式触发重训练：
+        当用户明确选择重训练时，使用原始数据按论文实验口径训练。
         """
         if not hasattr(self, "raw_X") or not hasattr(self, "raw_y"):
             if not os.path.exists(self.data_path):
                 raise FileNotFoundError(
-                    f"缺少可用工件且找不到原始数据文件: {self.data_path}"
+                    f"显式重训练失败：找不到原始数据文件 {self.data_path}"
                 )
             self._init_data_params_from_raw_data(self.data_path)
 
@@ -505,13 +546,18 @@ class FertilizerSystem:
         model.eval()
 
     def retrain_all(self):
-        print("\n>>> 开始重新训练所有模型...")
+        print("\n>>> 开始重新训练所有模型（显式操作）...")
         os.makedirs(SAVE_DIR, exist_ok=True)
 
+        self.allow_training_fallback = True
         self._init_data_params_from_raw_data(self.data_path)
 
         self.forward_model = self._get_forward_model(force_retrain=True)
         self.inverse_model = self._get_inverse_model(force_retrain=True)
+
+        self.loaded_forward_artifact = True
+        self.loaded_inverse_artifact = True
+
         self._save_meta()
         print(">>> 所有模型已更新并保存！")
 
@@ -530,14 +576,16 @@ class FertilizerSystem:
         with torch.no_grad():
             pred_norm = self.forward_model(input_t).cpu().numpy().item()
 
-        pred_mass = float(self._denorm_forward_y(pred_norm))
+        raw_pred_mass = float(self._denorm_forward_y(pred_norm))
 
         clipped = False
+        final_pred_mass = raw_pred_mass
         if self.config.get("enable_output_clipping", True):
-            pred_mass, clipped = self._clip_mass_to_physical_range(pred_mass)
+            final_pred_mass, clipped = self._clip_mass_to_physical_range(raw_pred_mass)
 
         return {
-            "pred_mass": float(pred_mass),
+            "raw_pred_mass": float(raw_pred_mass),
+            "pred_mass": float(final_pred_mass),
             "warnings": warnings,
             "clipped": clipped
         }
@@ -556,15 +604,17 @@ class FertilizerSystem:
         with torch.no_grad():
             pred_speed_norm = self.inverse_model(input_t).cpu().numpy().item()
 
-        pred_speed = float(self._denorm_inverse_y(pred_speed_norm))
+        raw_pred_speed = float(self._denorm_inverse_y(pred_speed_norm))
 
         clipped = False
+        final_pred_speed = raw_pred_speed
         if self.config.get("enable_output_clipping", True):
-            pred_speed, clipped = self._clip_speed_to_physical_range(pred_speed)
+            final_pred_speed, clipped = self._clip_speed_to_physical_range(raw_pred_speed)
 
         return {
             "opening": rec_opening,
-            "speed": float(pred_speed),
+            "raw_speed": float(raw_pred_speed),
+            "speed": float(final_pred_speed),
             "warnings": warnings,
             "clipped": clipped
         }
@@ -575,15 +625,16 @@ def main():
         sys_ctrl = FertilizerSystem()
     except Exception as e:
         print(f"初始化错误: {e}")
+        print("提示：请先确保 path/ 下的 forward / inverse 工件完整可用，或在具备数据文件后选择显式重训练。")
         return
 
     while True:
-        print("\n" + "=" * 52)
-        print("   排肥控制系统 v2.4 (Lean Config)")
-        print("=" * 52)
+        print("\n" + "=" * 56)
+        print("   排肥控制系统 v2.5 (Strict Artifact Mode)")
+        print("=" * 56)
         print("1. [正向预测] 开度/转速 -> 产量")
         print("2. [智能控制] 目标产量 -> 开度/转速")
-        print("3. [系统维护] 重新训练模型")
+        print("3. [系统维护] 重新训练模型（显式操作）")
         print("4. [系统维护] 查看当前配置")
         print("5. 退出")
 
@@ -596,7 +647,11 @@ def main():
 
                 result = sys_ctrl.predict_mass(op, spd)
 
-                print(f"\n✅ 预测排肥量: {result['pred_mass']:.2f} g/min")
+                print(f"\n✅ 原始预测排肥量: {result['raw_pred_mass']:.2f} g/min")
+                if result["clipped"]:
+                    print(f"✅ 裁剪后输出排肥量: {result['pred_mass']:.2f} g/min")
+                else:
+                    print(f"✅ 最终输出排肥量: {result['pred_mass']:.2f} g/min")
 
                 if result["warnings"]:
                     print("⚠ 输入超出训练范围，当前结果属于外推预测，可信度可能下降：")
@@ -605,6 +660,7 @@ def main():
 
                 if result["clipped"]:
                     print("⚠ 预测结果已裁剪到训练数据支持的物理范围内。")
+                    print("⚠ 请注意区分：原始预测值反映模型输出，裁剪后结果属于后处理结果。")
 
             except ValueError:
                 print("输入错误，请输入数值。")
@@ -617,7 +673,12 @@ def main():
 
                 print("\n✅ 推荐策略:")
                 print(f"   - 调节开度: {result['opening']:.1f} mm")
-                print(f"   - 设定转速: {result['speed']:.2f} r/min")
+
+                if result["clipped"]:
+                    print(f"   - 原始推荐转速: {result['raw_speed']:.2f} r/min")
+                    print(f"   - 裁剪后设定转速: {result['speed']:.2f} r/min")
+                else:
+                    print(f"   - 设定转速: {result['speed']:.2f} r/min")
 
                 if result["warnings"]:
                     print("⚠ 输入超出训练范围，当前结果属于外推控制建议，可信度可能下降：")
@@ -626,14 +687,20 @@ def main():
 
                 if result["clipped"]:
                     print("⚠ 推荐转速已裁剪到训练数据支持的物理范围内。")
+                    print("⚠ 请注意区分：原始转速反映模型输出，裁剪后结果属于后处理结果。")
 
             except ValueError:
                 print("输入错误，请输入数值。")
 
         elif choice == "3":
-            confirm = input("确定要重新训练吗？(y/n): ").strip().lower()
+            confirm = input(
+                "确定要重新训练吗？这会基于当前数据重新生成模型，可能导致与既有论文工件不一致。(y/n): "
+            ).strip().lower()
             if confirm == "y":
-                sys_ctrl.retrain_all()
+                try:
+                    sys_ctrl.retrain_all()
+                except Exception as e:
+                    print(f"重新训练失败: {e}")
 
         elif choice == "4":
             sys_ctrl.show_config()

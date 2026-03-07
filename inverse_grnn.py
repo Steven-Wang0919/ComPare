@@ -2,7 +2,7 @@
 """
 inverse_grnn.py
 
-反向 GRNN 模型（输入+输出 0-1 归一化）：
+反向 GRNN 模型（严格披露版）：
     输入:  [目标质量 (g/min), 排肥口开度 (mm)]
     输出:  [排肥轴转速 (r/min)]
 
@@ -14,18 +14,6 @@ inverse_grnn.py
 因此：
     - 主评估对象：满足“实际开度 == 策略开度”的测试样本（策略一致子集）
     - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
-
-训练 & 评估方式：
-    - 使用 common_utils.load_data() 加载数据
-      X_raw: [开度(mm), 转速(r/min)]
-      y_raw: [质量(g/min)]
-    - 构造“反向问题”:
-      输入: [质量, 开度] = X_inv_all
-      输出: 转速        = y_inv_all
-    - 使用 get_train_val_test_indices 进行 train/val/test 三分
-    - 使用 train+val 计算 X, y 的 0–1 归一化参数
-    - 模型内部拟合 y_norm (0~1)，评估前反归一化为真实转速
-    - 在 train 上训练，用 val 集 R² 选择最优 σ
 """
 
 import numpy as np
@@ -36,6 +24,7 @@ from common_utils import load_data, get_train_val_test_indices, average_relative
 
 THRESHOLD_LOW_MID = 2800.0
 THRESHOLD_MID_HIGH = 4800.0
+EPS = 1e-8
 
 
 def select_optimal_opening(target_mass: float) -> float:
@@ -45,6 +34,35 @@ def select_optimal_opening(target_mass: float) -> float:
         return 35.0
     else:
         return 50.0
+
+
+def _safe_r2(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if len(y_true) < 2:
+        return np.nan
+    if np.allclose(y_true, y_true[0]):
+        return np.nan
+    return float(r2_score(y_true, y_pred))
+
+
+def _safe_are(y_true, y_pred):
+    y_true = np.asarray(y_true, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    if len(y_true) == 0:
+        return np.nan
+    return float(average_relative_error(y_true, y_pred))
+
+
+def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
+    openings = np.asarray(openings, dtype=float)
+    stats = {}
+    for v in opening_values:
+        stats[f"{int(v)}mm"] = int(np.isclose(openings, v, atol=atol).sum())
+    stats["other"] = int(
+        len(openings) - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
+    )
+    return stats
 
 
 class InverseGRNN:
@@ -71,10 +89,11 @@ class InverseGRNN:
         dist2 = np.sum(diff ** 2, axis=1)
         w = np.exp(-dist2 / (2.0 * self.sigma ** 2))
 
-        if w.sum() == 0.0:
+        w_sum = w.sum()
+        if w_sum <= EPS:
             return float(self.y.mean())
 
-        return float(np.sum(w * self.y) / w.sum())
+        return float(np.sum(w * self.y) / w_sum)
 
     def predict(self, X):
         X = np.asarray(X, dtype=float)
@@ -94,16 +113,20 @@ def train_and_eval_inverse_grnn(
     if len(sigma_grid) == 0:
         raise ValueError("sigma_grid 不能为空")
 
-    print("\n=== 训练 反向 GRNN（归一化版，转速优先口径） ===")
+    print("\n=== 训练 反向 GRNN（严格披露版，转速优先口径） ===")
 
     X_raw, y_raw = load_data(data_path)
 
     n_samples = len(y_raw)
-    train_idx, val_idx, test_idx = get_train_val_test_indices(n_samples)
+    train_idx, val_idx, test_idx = get_train_val_test_indices(X=X_raw, y=y_raw)
 
+    # 反向任务：
+    # 输入 = [质量, 开度]
+    # 输出 = 转速
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
+    # 与原实现一致：归一化统计量使用 train+val
     train_full_idx = np.concatenate([train_idx, val_idx])
 
     X_train_full_raw = X_inv_all[train_full_idx]
@@ -115,13 +138,13 @@ def train_and_eval_inverse_grnn(
     y_max = float(y_train_full_raw.max())
 
     def norm_x(x):
-        return (x - x_min) / (x_max - x_min + 1e-8)
+        return (x - x_min) / (x_max - x_min + EPS)
 
     def norm_y(y):
-        return (y - y_min) / (y_max - y_min + 1e-8)
+        return (y - y_min) / (y_max - y_min + EPS)
 
     def denorm_y(y_norm):
-        return y_norm * (y_max - y_min + 1e-8) + y_min
+        return y_norm * (y_max - y_min + EPS) + y_min
 
     X_train_raw = X_inv_all[train_idx]
     y_train_raw = y_inv_all[train_idx]
@@ -136,7 +159,7 @@ def train_and_eval_inverse_grnn(
     best_sigma = None
     best_r2_val = -np.inf
 
-    print(">>> 正在为反向 GRNN 选择最优 σ（基于 val R²）...")
+    print(">>> 正在为反向 GRNN 选择最优 σ（基于 val R²，原始物理量空间）...")
     for s in sigma_grid:
         model_tmp = InverseGRNN(sigma=float(s))
         model_tmp.fit(X_train_norm, y_train_norm)
@@ -173,8 +196,9 @@ def train_and_eval_inverse_grnn(
     pred_test_norm = inv_grnn.predict(X_test_norm)
     pred_test_speed = denorm_y(pred_test_norm)
 
-    r2_all = r2_score(test_speed_true, pred_test_speed)
-    are_all = average_relative_error(test_speed_true, pred_test_speed)
+    r2_all = _safe_r2(test_speed_true, pred_test_speed)
+    are_all = _safe_are(test_speed_true, pred_test_speed)
+    n_all = int(len(test_speed_true))
 
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
@@ -183,6 +207,7 @@ def train_and_eval_inverse_grnn(
     policy_mask = np.isclose(test_opening, strategy_opening_all, atol=0.1)
 
     n_main = int(policy_mask.sum())
+    main_ratio = float(n_main / n_all) if n_all > 0 else np.nan
 
     if n_main > 0:
         mass_main = test_mass[policy_mask]
@@ -191,8 +216,8 @@ def train_and_eval_inverse_grnn(
         y_true_main = test_speed_true[policy_mask]
         y_pred_main = pred_test_speed[policy_mask]
 
-        r2_main = r2_score(y_true_main, y_pred_main)
-        are_main = average_relative_error(y_true_main, y_pred_main)
+        r2_main = _safe_r2(y_true_main, y_pred_main)
+        are_main = _safe_are(y_true_main, y_pred_main)
     else:
         mass_main = np.array([], dtype=float)
         opening_main = np.array([], dtype=float)
@@ -202,38 +227,64 @@ def train_and_eval_inverse_grnn(
         r2_main = np.nan
         are_main = np.nan
 
+    opening_dist_all = _count_openings(test_opening)
+    opening_dist_main = _count_openings(opening_main)
+
     print("\n===== 反向 GRNN（转速优先口径）测试结果 =====")
     if n_main > 0:
-        print(f"主结果（策略一致子集）: n = {n_main:3d}, R² = {r2_main:.4f}, ARE = {are_main:.4f}%")
+        print(
+            f"主结果（策略一致子集）: n = {n_main:3d} / {n_all:3d} "
+            f"({main_ratio * 100:.2f}%), R² = {r2_main:.4f}, ARE = {are_main:.4f}%"
+        )
     else:
-        print("主结果（策略一致子集）: n =   0, R² = NaN, ARE = NaN")
+        print(
+            f"主结果（策略一致子集）: n =   0 / {n_all:3d} "
+            f"(0.00%), R² = NaN, ARE = NaN"
+        )
 
-    print(f"补充结果（全测试集）  : n = {len(test_speed_true):3d}, R² = {r2_all:.4f}, ARE = {are_all:.4f}%")
+    print(
+        f"补充结果（全测试集）  : n = {n_all:3d}, "
+        f"R² = {r2_all:.4f}, ARE = {are_all:.4f}%"
+    )
+
+    print("\n--- 开度分布披露 ---")
+    print(
+        "全测试集开度分布: "
+        f"20mm={opening_dist_all['20mm']}, "
+        f"35mm={opening_dist_all['35mm']}, "
+        f"50mm={opening_dist_all['50mm']}, "
+        f"other={opening_dist_all['other']}"
+    )
+    print(
+        "主结果子集开度分布: "
+        f"20mm={opening_dist_main['20mm']}, "
+        f"35mm={opening_dist_main['35mm']}, "
+        f"50mm={opening_dist_main['50mm']}, "
+        f"other={opening_dist_main['other']}"
+    )
 
     return {
         "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,
         "are_main": float(are_main) if not np.isnan(are_main) else np.nan,
         "n_main": n_main,
-
-        "r2_all": float(r2_all),
-        "are_all": float(are_all),
-        "n_all": int(len(test_speed_true)),
-
+        "main_ratio": float(main_ratio) if not np.isnan(main_ratio) else np.nan,
+        "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
+        "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
+        "n_all": n_all,
         "best_sigma": float(best_sigma),
-
         "y_true_all": np.asarray(test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
         "opening_all": np.asarray(test_opening),
         "strategy_opening_all": np.asarray(strategy_opening_all),
-
         "y_true_main": np.asarray(y_true_main),
         "y_pred_main": np.asarray(y_pred_main),
         "mass_main": np.asarray(mass_main),
         "opening_main": np.asarray(opening_main),
         "strategy_opening_main": np.asarray(strategy_opening_main),
-
         "policy_mask": np.asarray(policy_mask),
+        "opening_dist_all": opening_dist_all,
+        "opening_dist_main": opening_dist_main,
     }
 
 
