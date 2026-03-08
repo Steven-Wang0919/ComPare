@@ -227,6 +227,8 @@ def fit_one_inverse_kan(
     y_train,
     X_val,
     y_val,
+    y_val_raw,
+    denorm_y,
     hidden_dim=16,
     lr=1e-3,
     weight_decay=1e-5,
@@ -257,12 +259,17 @@ def fit_one_inverse_kan(
 
         model.eval()
         with torch.no_grad():
-            val_pred = model(X_val_t).cpu().numpy().reshape(-1)
+            val_pred_norm = model(X_val_t).cpu().numpy().reshape(-1)
 
-        val_r2 = r2_score(y_val, val_pred)
-        if val_r2 > best_val_r2:
+        val_pred_raw = denorm_y(val_pred_norm)
+        val_r2 = _safe_r2(y_val_raw, val_pred_raw)
+
+        if not np.isnan(val_r2) and val_r2 > best_val_r2:
             best_val_r2 = val_r2
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_state = {
+                k: v.detach().cpu().clone()
+                for k, v in model.state_dict().items()
+            }
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -328,7 +335,6 @@ def train_and_eval_inverse_kan_v2(
 
     X_raw, y_raw = load_data(data_path)
 
-    n_samples = len(y_raw)
     idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
 
     # 反向任务：
@@ -377,7 +383,7 @@ def train_and_eval_inverse_kan_v2(
     best_lr = None
     best_weight_decay = None
 
-    print(">>> 开始搜索反向 KAN 最优超参数（基于 val R²，归一化空间）...")
+    print(">>> 开始搜索反向 KAN 最优超参数（基于 val R²，原始物理量空间）...")
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
@@ -386,6 +392,8 @@ def train_and_eval_inverse_kan_v2(
                     y_train=y_train,
                     X_val=X_val,
                     y_val=y_val,
+                    y_val_raw=y_val_raw,
+                    denorm_y=denorm_y,
                     hidden_dim=hidden_dim,
                     lr=lr,
                     weight_decay=wd,

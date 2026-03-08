@@ -30,7 +30,7 @@
     "epochs": 1000
   },
   "validation_result": {
-    "best_val_r2": 0.9999574422836304
+    "best_val_r2": 0.9999574159564666
   },
   "normalization_params": {
     "X_min": [

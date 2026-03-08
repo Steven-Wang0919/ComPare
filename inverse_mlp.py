@@ -90,7 +90,7 @@ def train_and_eval_inverse_mlp(
     X_raw, y_raw = load_data(data_path)
 
     n_samples = len(y_raw)
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(n_samples)
+    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
 
     # 反向任务：
     # 输入 = [目标质量, 开度]

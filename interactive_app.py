@@ -289,8 +289,7 @@ class FertilizerSystem:
         self.raw_X = X
         self.raw_y = y
 
-        n_samples = len(y)
-        idx_tr, idx_val, idx_te = get_train_val_test_indices(n_samples)
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
         self.idx_tr = idx_tr
         self.idx_val = idx_val
         self.idx_te = idx_te
