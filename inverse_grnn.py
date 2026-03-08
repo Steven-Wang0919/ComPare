@@ -2,7 +2,7 @@
 """
 inverse_grnn.py
 
-反向 GRNN 模型（严格披露版）：
+反向 GRNN 模型（train-only normalization 版）：
     输入:  [目标质量 (g/min), 排肥口开度 (mm)]
     输出:  [排肥轴转速 (r/min)]
 
@@ -14,6 +14,10 @@ inverse_grnn.py
 因此：
     - 主评估对象：满足“实际开度 == 策略开度”的测试样本（策略一致子集）
     - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
+
+本版修订重点：
+1. 将反向任务归一化统计量改为仅使用 train
+2. 最终模型仍使用 train+val 训练，但归一化参数固定来自 train
 """
 
 import numpy as np
@@ -113,11 +117,10 @@ def train_and_eval_inverse_grnn(
     if len(sigma_grid) == 0:
         raise ValueError("sigma_grid 不能为空")
 
-    print("\n=== 训练 反向 GRNN（严格披露版，转速优先口径） ===")
+    print("\n=== 训练 反向 GRNN（train-only normalization，转速优先口径） ===")
 
     X_raw, y_raw = load_data(data_path)
 
-    n_samples = len(y_raw)
     train_idx, val_idx, test_idx = get_train_val_test_indices(X=X_raw, y=y_raw)
 
     # 反向任务：
@@ -126,16 +129,17 @@ def train_and_eval_inverse_grnn(
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
-    # 与原实现一致：归一化统计量使用 train+val
-    train_full_idx = np.concatenate([train_idx, val_idx])
+    X_train_raw = X_inv_all[train_idx]
+    y_train_raw = y_inv_all[train_idx]
 
-    X_train_full_raw = X_inv_all[train_full_idx]
-    y_train_full_raw = y_inv_all[train_full_idx]
+    X_val_raw = X_inv_all[val_idx]
+    y_val_raw = y_inv_all[val_idx]
 
-    x_min = X_train_full_raw.min(axis=0, keepdims=True)
-    x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = float(y_train_full_raw.min())
-    y_max = float(y_train_full_raw.max())
+    # 方法学修复：归一化统计量仅使用 train
+    x_min = X_train_raw.min(axis=0, keepdims=True)
+    x_max = X_train_raw.max(axis=0, keepdims=True)
+    y_min = float(y_train_raw.min())
+    y_max = float(y_train_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + EPS)
@@ -145,12 +149,6 @@ def train_and_eval_inverse_grnn(
 
     def denorm_y(y_norm):
         return y_norm * (y_max - y_min + EPS) + y_min
-
-    X_train_raw = X_inv_all[train_idx]
-    y_train_raw = y_inv_all[train_idx]
-
-    X_val_raw = X_inv_all[val_idx]
-    y_val_raw = y_inv_all[val_idx]
 
     X_train_norm = norm_x(X_train_raw)
     X_val_norm = norm_x(X_val_raw)
@@ -177,6 +175,11 @@ def train_and_eval_inverse_grnn(
         raise RuntimeError("反向 GRNN 超参数搜索失败：best_sigma 为空")
 
     print(f"反向 GRNN 最优 σ = {best_sigma:.4f}, val R² = {best_r2_val:.6f}")
+
+    # 最终模型仍用 train+val 训练，但归一化参数固定来自 train
+    train_full_idx = np.concatenate([train_idx, val_idx])
+    X_train_full_raw = X_inv_all[train_full_idx]
+    y_train_full_raw = y_inv_all[train_full_idx]
 
     X_train_full_norm = norm_x(X_train_full_raw)
     y_train_full_norm = norm_y(y_train_full_raw)
@@ -262,6 +265,8 @@ def train_and_eval_inverse_grnn(
         f"50mm={opening_dist_main['50mm']}, "
         f"other={opening_dist_main['other']}"
     )
+
+    print("本版方法学修订：归一化统计量仅来自 train，val 仅用于调参。")
 
     return {
         "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,

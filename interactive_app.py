@@ -1,31 +1,28 @@
 # -*- coding: utf-8 -*-
 """
-排肥系统交互控制终端（严格工件模式版）
+排肥系统交互控制终端（严格工件模式 + 精确训练入口对接版）
 
-修订原则：
-1. 启动时优先且默认必须消费训练工件
-2. 若工件缺失 / 元数据损坏 / 权重不匹配，则直接报错退出
-3. 禁止在启动阶段静默自动重训练，避免部署模型与论文模型漂移
-4. 仅当用户在菜单中显式选择“重新训练模型”时，才允许训练
-5. 保留输入越界检查、外推告警、输出裁剪
-6. 返回原始预测值和裁剪后预测值，避免后处理掩盖模型真实性能
+本版重点修复：
+1. 启动阶段严格要求工件完整可用，禁止静默自动重训练
+2. 显式重训练时，直接复用正式训练脚本：
+   - train_kan.train_and_eval_kan(...)
+   - inverse_kan.train_and_eval_inverse_kan_v2(...)
+3. 重训练完成后重新加载工件，确保交互端与正式训练口径一致
+4. 保留输入越界告警、输出裁剪、原始值与裁剪后值并列展示
 """
 
 import json
 import os
 import random
+import tempfile
 
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
 
-from common_utils import load_data, get_train_val_test_indices
-from train_kan import FertilizerKAN
-from inverse_kan import InverseKANModel, select_optimal_opening
+from train_kan import FertilizerKAN, train_and_eval_kan
+from inverse_kan import InverseKANModel, select_optimal_opening, train_and_eval_inverse_kan_v2
 
 
-# ================= 配置区域 =================
 SAVE_DIR = "path"
 
 MODEL_FWD_PATH = os.path.join(SAVE_DIR, "kan_forward.pth")
@@ -35,30 +32,28 @@ META_PATH = os.path.join(SAVE_DIR, "model_meta.json")
 FORWARD_META_PATH = os.path.join(SAVE_DIR, "kan_forward_meta.json")
 INVERSE_META_PATH = os.path.join(SAVE_DIR, "kan_inverse_meta.json")
 
-# 只保留“交互系统配置”
 DEFAULT_CONFIG = {
     "seed": 42,
     "data_path": "data/dataset.xlsx",
     "enable_range_warning": True,
     "enable_output_clipping": True,
     "prefer_saved_artifacts": True,
-    # 新增：严格模式下，启动必须要求工件完整可用
     "strict_artifact_mode": True,
 }
 
-# 仅用于“用户显式触发重训练”时
-FALLBACK_MODEL_PARAMS = {
-    "forward_hidden_dim": 16,
-    "forward_lr": 0.005,
-    "forward_weight_decay": 1e-5,
+# 仅供显式重训练时使用；正式训练脚本会基于候选集自行搜索最优参数
+DEFAULT_TRAINING_CONFIG = {
+    "forward_hidden_dim_candidates": [4, 8, 16],
+    "forward_lr_candidates": [0.01, 0.005],
+    "forward_weight_decay_candidates": [1e-4, 1e-5],
     "forward_epochs": 600,
+    "forward_search_epochs": 300,
+    "forward_lr_gamma": 0.99,
 
-    "inverse_hidden_dim": 16,
-    "inverse_lr": 0.005,
-    "inverse_weight_decay": 1e-5,
+    "inverse_hidden_dim_candidates": [8, 16, 32],
+    "inverse_lr_candidates": [1e-2, 5e-3, 1e-3],
+    "inverse_weight_decay_candidates": [0.0, 1e-6, 1e-5, 1e-4],
     "inverse_epochs": 1000,
-
-    "lr_gamma": 0.99,
 }
 
 
@@ -81,37 +76,26 @@ class FertilizerSystem:
         print(f"正在初始化施肥控制系统 (Device: {self.device})...")
         os.makedirs(SAVE_DIR, exist_ok=True)
 
-        # 只加载交互配置
         self.config = self._load_or_init_config(data_path=data_path)
         self.seed = int(self.config["seed"])
         set_seed(self.seed)
-
         self.data_path = self.config["data_path"]
 
-        # 运行期模型参数：优先由工件恢复；否则使用 fallback（仅供显式重训练时使用）
-        self.model_params = dict(FALLBACK_MODEL_PARAMS)
+        self.training_config = dict(DEFAULT_TRAINING_CONFIG)
 
-        # 标记是否成功从工件恢复
         self.loaded_forward_artifact = False
         self.loaded_inverse_artifact = False
 
-        # 是否为显式重训练模式
-        self.allow_training_fallback = False
-
-        # 初始化运行态：严格优先工件
         self._init_runtime_state()
 
-        # 获取模型：默认只允许加载，不允许自动训练
         self.forward_model = self._get_forward_model()
         self.inverse_model = self._get_inverse_model()
 
-        # 保存精简后的系统配置
         self._save_meta()
-
         print("\n>>> 系统就绪！当前系统配置已保存至 path/model_meta.json")
 
     # =========================
-    # 配置管理（仅交互配置）
+    # 配置管理
     # =========================
     def _load_or_init_config(self, data_path=None):
         config = dict(DEFAULT_CONFIG)
@@ -135,10 +119,23 @@ class FertilizerSystem:
 
         return config
 
+    def _save_json_atomic(self, path, payload):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(prefix=".tmp_meta_", suffix=".json", dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(payload, f, ensure_ascii=False, indent=2)
+            os.replace(tmp_path, path)
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+
     def _save_meta(self):
         clean_config = {k: self.config[k] for k in DEFAULT_CONFIG.keys()}
-        with open(META_PATH, "w", encoding="utf-8") as f:
-            json.dump(clean_config, f, ensure_ascii=False, indent=2)
+        self._save_json_atomic(META_PATH, clean_config)
 
     def show_config(self):
         print("\n===== 当前交互配置 =====")
@@ -152,14 +149,13 @@ class FertilizerSystem:
         print(f"inverse_weight_exists: {os.path.exists(MODEL_INV_PATH)}")
         print(f"forward_meta_exists: {os.path.exists(FORWARD_META_PATH)}")
         print(f"inverse_meta_exists: {os.path.exists(INVERSE_META_PATH)}")
-        print(f"allow_training_fallback: {self.allow_training_fallback}")
 
-        print("\n===== 当前模型参数（运行期） =====")
-        for k, v in self.model_params.items():
+        print("\n===== 当前重训练参数 =====")
+        for k, v in self.training_config.items():
             print(f"{k}: {v}")
 
     # =========================
-    # 初始化运行态：严格优先工件
+    # 启动阶段：严格加载工件
     # =========================
     def _init_runtime_state(self):
         prefer_artifacts = bool(self.config.get("prefer_saved_artifacts", True))
@@ -171,9 +167,7 @@ class FertilizerSystem:
                     "当前配置不允许跳过工件加载（strict_artifact_mode=True），"
                     "请开启 prefer_saved_artifacts 或关闭严格模式。"
                 )
-            print("当前未启用工件优先，将回退到原始数据重算归一化参数。")
-            self._init_data_params_from_raw_data(self.data_path)
-            return
+            raise RuntimeError("当前版本不支持在关闭工件优先时启动。")
 
         fwd_ok = self._try_load_forward_artifact()
         inv_ok = self._try_load_inverse_artifact()
@@ -188,8 +182,7 @@ class FertilizerSystem:
                 "为避免部署模型与论文模型漂移，已禁止启动阶段自动重训练。"
             )
 
-        print("工件恢复不完整，且严格模式已关闭，回退到原始数据重算归一化参数。")
-        self._init_data_params_from_raw_data(self.data_path)
+        raise RuntimeError("当前版本不支持在工件缺失时继续启动。")
 
     def _try_load_forward_artifact(self):
         if not os.path.exists(FORWARD_META_PATH):
@@ -216,14 +209,7 @@ class FertilizerSystem:
             self.forward_mass_min = float(domain["mass_min"])
             self.forward_mass_max = float(domain["mass_max"])
 
-            if "hidden_dim" in hyper:
-                self.model_params["forward_hidden_dim"] = int(hyper["hidden_dim"])
-            if "lr" in hyper:
-                self.model_params["forward_lr"] = float(hyper["lr"])
-            if "weight_decay" in hyper:
-                self.model_params["forward_weight_decay"] = float(hyper["weight_decay"])
-            if "epochs" in hyper:
-                self.model_params["forward_epochs"] = int(hyper["epochs"])
+            self.forward_hidden_dim = int(hyper.get("hidden_dim", 8))
 
             self.loaded_forward_artifact = True
             print(f"已读取正向工件: {FORWARD_META_PATH}")
@@ -259,14 +245,7 @@ class FertilizerSystem:
             self.inverse_speed_min = float(domain["speed_min"])
             self.inverse_speed_max = float(domain["speed_max"])
 
-            if "hidden_dim" in hyper:
-                self.model_params["inverse_hidden_dim"] = int(hyper["hidden_dim"])
-            if "lr" in hyper:
-                self.model_params["inverse_lr"] = float(hyper["lr"])
-            if "weight_decay" in hyper:
-                self.model_params["inverse_weight_decay"] = float(hyper["weight_decay"])
-            if "epochs" in hyper:
-                self.model_params["inverse_epochs"] = int(hyper["epochs"])
+            self.inverse_hidden_dim = int(hyper.get("hidden_dim", 16))
 
             self.loaded_inverse_artifact = True
             print(f"已读取反向工件: {INVERSE_META_PATH}")
@@ -278,64 +257,7 @@ class FertilizerSystem:
             return False
 
     # =========================
-    # 回退逻辑：仅用于显式重训练
-    # =========================
-    def _init_data_params_from_raw_data(self, path):
-        print(f"正在读取数据: {path} ...")
-        if not os.path.exists(path):
-            raise FileNotFoundError(f"找不到数据文件: {path}")
-
-        X, y = load_data(path)
-        self.raw_X = X
-        self.raw_y = y
-
-        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
-        self.idx_tr = idx_tr
-        self.idx_val = idx_val
-        self.idx_te = idx_te
-
-        forward_norm_idx = idx_tr
-        inverse_norm_idx = np.concatenate([idx_tr, idx_val])
-
-        # ---------- 正向模型归一化参数（仅基于 train） ----------
-        X_train = X[forward_norm_idx]
-        y_train = y[forward_norm_idx]
-
-        self.X_min = X_train.min(axis=0, keepdims=True)
-        self.X_max = X_train.max(axis=0, keepdims=True)
-        self.y_min = float(y_train.min())
-        self.y_max = float(y_train.max())
-
-        self.forward_opening_min = float(X_train[:, 0].min())
-        self.forward_opening_max = float(X_train[:, 0].max())
-        self.forward_speed_min = float(X_train[:, 1].min())
-        self.forward_speed_max = float(X_train[:, 1].max())
-        self.forward_mass_min = float(y_train.min())
-        self.forward_mass_max = float(y_train.max())
-
-        # ---------- 反向模型归一化参数（基于 train+val） ----------
-        inv_X_raw = np.stack([y, X[:, 0]], axis=1)
-        inv_y_raw = X[:, 1]
-
-        inv_X_train_full = inv_X_raw[inverse_norm_idx]
-        inv_y_train_full = inv_y_raw[inverse_norm_idx]
-
-        self.inv_x_min = inv_X_train_full.min(axis=0, keepdims=True)
-        self.inv_x_max = inv_X_train_full.max(axis=0, keepdims=True)
-        self.inv_y_min = float(inv_y_train_full.min())
-        self.inv_y_max = float(inv_y_train_full.max())
-
-        self.inverse_target_mass_min = float(inv_X_train_full[:, 0].min())
-        self.inverse_target_mass_max = float(inv_X_train_full[:, 0].max())
-        self.inverse_opening_min = float(inv_X_train_full[:, 1].min())
-        self.inverse_opening_max = float(inv_X_train_full[:, 1].max())
-        self.inverse_speed_min = float(inv_y_train_full.min())
-        self.inverse_speed_max = float(inv_y_train_full.max())
-
-        print("已基于原始数据重算归一化参数与训练域边界。")
-
-    # =========================
-    # 归一化 / 反归一化工具
+    # 工具函数
     # =========================
     def _norm_forward_x(self, x):
         return (x - self.X_min) / (self.X_max - self.X_min + 1e-8)
@@ -349,9 +271,6 @@ class FertilizerSystem:
     def _denorm_inverse_y(self, y_norm):
         return y_norm * (self.inv_y_max - self.inv_y_min + 1e-8) + self.inv_y_min
 
-    # =========================
-    # 交互保护工具
-    # =========================
     def _format_range(self, low, high, unit=""):
         return f"[{low:.2f}, {high:.2f}]{unit}"
 
@@ -400,38 +319,23 @@ class FertilizerSystem:
         return clipped_mass, was_clipped
 
     # =========================
-    # 模型定义
+    # 模型构建 / 加载
     # =========================
     def _build_forward_model(self):
-        hidden_dim = int(self.model_params["forward_hidden_dim"])
         return FertilizerKAN(
             input_dim=2,
-            hidden_dim=hidden_dim,
+            hidden_dim=int(self.forward_hidden_dim),
             output_dim=1
         ).to(self.device)
 
     def _build_inverse_model(self):
-        hidden_dim = int(self.model_params["inverse_hidden_dim"])
         return InverseKANModel(
             input_dim=2,
-            hidden_dim=hidden_dim,
+            hidden_dim=int(self.inverse_hidden_dim),
             output_dim=1
         ).to(self.device)
 
-    # =========================
-    # 模型获取 / 训练 / 保存
-    # =========================
-    def _get_forward_model(self, force_retrain=False):
-        model = self._build_forward_model()
-
-        if force_retrain:
-            print("[- 正向模型] 显式触发重训练...")
-            self._train_model_process(model, mode="forward")
-            torch.save(model.state_dict(), MODEL_FWD_PATH)
-            print(f"   模型已保存至 -> {MODEL_FWD_PATH}")
-            model.eval()
-            return model
-
+    def _get_forward_model(self):
         if not os.path.exists(MODEL_FWD_PATH):
             raise FileNotFoundError(
                 f"缺少正向权重文件: {MODEL_FWD_PATH}。"
@@ -439,6 +343,7 @@ class FertilizerSystem:
                 "或在菜单中显式选择重新训练。"
             )
 
+        model = self._build_forward_model()
         print(f"[- 正向模型] 从 {MODEL_FWD_PATH} 加载...")
         try:
             model.load_state_dict(torch.load(MODEL_FWD_PATH, map_location=self.device))
@@ -447,20 +352,10 @@ class FertilizerSystem:
         except Exception as e:
             raise RuntimeError(
                 f"正向模型权重加载失败: {e}。"
-                "系统已禁止启动阶段自动重训练，以避免部署模型与论文模型不一致。"
+                "请检查权重文件与 meta 中记录的 hidden_dim 是否一致。"
             )
 
-    def _get_inverse_model(self, force_retrain=False):
-        model = self._build_inverse_model()
-
-        if force_retrain:
-            print("[- 反向模型] 显式触发重训练...")
-            self._train_model_process(model, mode="inverse")
-            torch.save(model.state_dict(), MODEL_INV_PATH)
-            print(f"   模型已保存至 -> {MODEL_INV_PATH}")
-            model.eval()
-            return model
-
+    def _get_inverse_model(self):
         if not os.path.exists(MODEL_INV_PATH):
             raise FileNotFoundError(
                 f"缺少反向权重文件: {MODEL_INV_PATH}。"
@@ -468,6 +363,7 @@ class FertilizerSystem:
                 "或在菜单中显式选择重新训练。"
             )
 
+        model = self._build_inverse_model()
         print(f"[- 反向模型] 从 {MODEL_INV_PATH} 加载...")
         try:
             model.load_state_dict(torch.load(MODEL_INV_PATH, map_location=self.device))
@@ -476,89 +372,82 @@ class FertilizerSystem:
         except Exception as e:
             raise RuntimeError(
                 f"反向模型权重加载失败: {e}。"
-                "系统已禁止启动阶段自动重训练，以避免部署模型与论文模型不一致。"
+                "请检查权重文件与 meta 中记录的 hidden_dim 是否一致。"
             )
 
-    def _train_model_process(self, model, mode="forward"):
-        """
-        仅用于用户显式触发重训练：
-        当用户明确选择重训练时，使用原始数据按论文实验口径训练。
-        """
-        if not hasattr(self, "raw_X") or not hasattr(self, "raw_y"):
-            if not os.path.exists(self.data_path):
-                raise FileNotFoundError(
-                    f"显式重训练失败：找不到原始数据文件 {self.data_path}"
-                )
-            self._init_data_params_from_raw_data(self.data_path)
+    # =========================
+    # 精确对接正式训练脚本
+    # =========================
+    def _retrain_forward_via_official_pipeline(self):
+        print("\n>>> 调用正式正向训练入口: train_and_eval_kan(...)")
 
-        set_seed(self.seed)
-        train_full_idx = np.concatenate([self.idx_tr, self.idx_val])
+        result = train_and_eval_kan(
+            data_path=self.data_path,
+            hidden_dim_candidates=self.training_config["forward_hidden_dim_candidates"],
+            lr_candidates=self.training_config["forward_lr_candidates"],
+            weight_decay_candidates=self.training_config["forward_weight_decay_candidates"],
+            epochs=int(self.training_config["forward_epochs"]),
+            search_epochs=int(self.training_config["forward_search_epochs"]),
+            gamma=float(self.training_config["forward_lr_gamma"]),
+            seed=int(self.seed),
+            save_artifacts=True,
+            artifact_dir=SAVE_DIR,
+            weight_filename=os.path.basename(MODEL_FWD_PATH),
+            meta_filename=os.path.basename(FORWARD_META_PATH),
+        )
 
-        if mode == "forward":
-            X_train_full = self.raw_X[train_full_idx]
-            y_train_full = self.raw_y[train_full_idx]
+        if not (os.path.exists(MODEL_FWD_PATH) and os.path.exists(FORWARD_META_PATH)):
+            raise RuntimeError("正式正向训练已返回，但未生成完整工件。")
 
-            X_data = self._norm_forward_x(X_train_full)
-            y_data = (y_train_full - self.y_min) / (self.y_max - self.y_min + 1e-8)
+        print(
+            f"正向重训练完成: R²={result['r2']:.6f}, ARE={result['are']:.6f}%"
+        )
+        return result
 
-            lr = float(self.model_params["forward_lr"])
-            wd = float(self.model_params["forward_weight_decay"])
-            epochs = int(self.model_params["forward_epochs"])
+    def _retrain_inverse_via_official_pipeline(self):
+        print("\n>>> 调用正式反向训练入口: train_and_eval_inverse_kan_v2(...)")
 
-        elif mode == "inverse":
-            inv_X = np.stack([self.raw_y, self.raw_X[:, 0]], axis=1)
-            inv_y = self.raw_X[:, 1]
+        result = train_and_eval_inverse_kan_v2(
+            data_path=self.data_path,
+            hidden_dim_candidates=self.training_config["inverse_hidden_dim_candidates"],
+            lr_candidates=self.training_config["inverse_lr_candidates"],
+            weight_decay_candidates=self.training_config["inverse_weight_decay_candidates"],
+            epochs=int(self.training_config["inverse_epochs"]),
+            device=str(self.device),
+            seed=int(self.seed),
+            save_artifacts=True,
+            artifact_dir=SAVE_DIR,
+            weight_filename=os.path.basename(MODEL_INV_PATH),
+            meta_filename=os.path.basename(INVERSE_META_PATH),
+        )
 
-            inv_X_train_full = inv_X[train_full_idx]
-            inv_y_train_full = inv_y[train_full_idx]
+        if not (os.path.exists(MODEL_INV_PATH) and os.path.exists(INVERSE_META_PATH)):
+            raise RuntimeError("正式反向训练已返回，但未生成完整工件。")
 
-            X_data = self._norm_inverse_x(inv_X_train_full)
-            y_data = (inv_y_train_full - self.inv_y_min) / (self.inv_y_max - self.inv_y_min + 1e-8)
-
-            lr = float(self.model_params["inverse_lr"])
-            wd = float(self.model_params["inverse_weight_decay"])
-            epochs = int(self.model_params["inverse_epochs"])
-        else:
-            raise ValueError(f"未知模式: {mode}")
-
-        gamma = float(self.model_params.get("lr_gamma", 0.99))
-
-        X_t = torch.tensor(X_data, dtype=torch.float32).to(self.device)
-        y_t = torch.tensor(y_data, dtype=torch.float32).reshape(-1, 1).to(self.device)
-
-        optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-        scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-        criterion = nn.MSELoss()
-
-        model.train()
-        for epoch in range(epochs):
-            optimizer.zero_grad()
-            pred = model(X_t)
-            loss = criterion(pred, y_t)
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            if (epoch + 1) % 100 == 0:
-                print(f"   [{mode}] Epoch {epoch + 1}/{epochs}, Loss={loss.item():.6f}")
-
-        model.eval()
+        print(
+            "反向重训练完成: "
+            f"main R²={result['r2_main']}, main ARE={result['are_main']}%, "
+            f"all R²={result['r2_all']}, all ARE={result['are_all']}%"
+        )
+        return result
 
     def retrain_all(self):
-        print("\n>>> 开始重新训练所有模型（显式操作）...")
-        os.makedirs(SAVE_DIR, exist_ok=True)
+        print("\n>>> 开始重新训练所有模型（显式操作，严格复用正式训练脚本）...")
 
-        self.allow_training_fallback = True
-        self._init_data_params_from_raw_data(self.data_path)
+        self._retrain_forward_via_official_pipeline()
+        self._retrain_inverse_via_official_pipeline()
 
-        self.forward_model = self._get_forward_model(force_retrain=True)
-        self.inverse_model = self._get_inverse_model(force_retrain=True)
+        # 重训练完成后，重新读取 meta / 权重，确保交互端状态与工件完全一致
+        if not self._try_load_forward_artifact():
+            raise RuntimeError("正向工件重训练完成后重新加载失败。")
+        if not self._try_load_inverse_artifact():
+            raise RuntimeError("反向工件重训练完成后重新加载失败。")
 
-        self.loaded_forward_artifact = True
-        self.loaded_inverse_artifact = True
+        self.forward_model = self._get_forward_model()
+        self.inverse_model = self._get_inverse_model()
 
         self._save_meta()
-        print(">>> 所有模型已更新并保存！")
+        print(">>> 所有模型已按正式训练脚本重建并重新加载。")
 
     # =========================
     # 业务接口
@@ -629,7 +518,7 @@ def main():
 
     while True:
         print("\n" + "=" * 56)
-        print("   排肥控制系统 v2.5 (Strict Artifact Mode)")
+        print("   排肥控制系统 v2.7 (Strict Artifact + Official Training)")
         print("=" * 56)
         print("1. [正向预测] 开度/转速 -> 产量")
         print("2. [智能控制] 目标产量 -> 开度/转速")

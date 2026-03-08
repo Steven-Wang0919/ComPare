@@ -2,7 +2,7 @@
 """
 inverse_kan.py
 
-反向 KAN 模型（严格披露版）：
+反向 KAN 模型（结构修复版）：
     输入:  [目标质量 (g/min), 排肥口开度 (mm)]
     输出:  [排肥轴转速 (r/min)]
 
@@ -16,23 +16,30 @@ inverse_kan.py
     - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
 
 本版修订重点：
-1. 保留原有训练与保存工件流程
-2. 显式报告：
+1. 将反向模型从原先的 MLP-like 结构修复为与 forward 同类的 spline/grid KAN 结构
+2. 保留原有训练与保存工件流程
+3. 显式报告：
    - 主结果样本数 n_main
    - 全测试集样本数 n_all
    - 主结果占比 main_ratio
    - 主结果与全测试集的 R² / ARE 并列输出
-3. 增加策略一致子集在不同开度上的样本分布
-4. 对极小样本时的 R² / ARE 做安全处理
-5. 返回更完整的结果字典，便于 compare / 论文表格 / 附录复用
+4. 增加策略一致子集在不同开度上的样本分布
+5. 对极小样本时的 R² / ARE 做安全处理
+6. 返回更完整的结果字典，便于 compare / 论文表格 / 附录复用
+
+注意：
+- 本次属于结构修复，旧的 kan_inverse.pth 与新结构不兼容，必须重新训练。
+- 为尽量减小联动影响，函数名、工件文件名、返回字段保持不变。
 """
 
 import json
 import os
 import random
+
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import r2_score
 
 from common_utils import load_data, get_train_val_test_indices, average_relative_error
@@ -92,43 +99,131 @@ def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
     for v in opening_values:
         stats[f"{int(v)}mm"] = int(np.isclose(openings, v, atol=atol).sum())
     stats["other"] = int(
-        len(openings)
-        - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
+        len(openings) - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
     )
     return stats
 
 
 class KANLayer(nn.Module):
     """
-    说明：
-    当前实现保留作者原始结构，不在这一步修改模型名实一致性问题。
-    若后续要进一步严格审稿整改，可单独把“反向 KAN”重命名为更准确的结构名称。
+    与 forward/train_kan.py 中的 KANLayer 保持同类结构：
+    - base branch: base_activation + linear
+    - spline branch: B-spline bases + spline coefficients
     """
-    def __init__(self, in_dim, out_dim):
-        super().__init__()
-        self.linear = nn.Linear(in_dim, out_dim)
-        self.base = nn.Sequential(
-            nn.Linear(in_dim, out_dim),
-            nn.Tanh()
+
+    def __init__(
+        self,
+        in_features,
+        out_features,
+        grid_size=10,
+        spline_order=3,
+        scale_noise=0.1,
+        scale_base=1.0,
+        scale_spline=1.0,
+        base_activation=torch.nn.SiLU,
+        grid_range=(-1.0, 1.0),
+    ):
+        super(KANLayer, self).__init__()
+        self.in_features = in_features
+        self.out_features = out_features
+        self.grid_size = grid_size
+        self.spline_order = spline_order
+        self.base_activation = base_activation()
+
+        self.input_grid = torch.einsum(
+            "i,j->ij",
+            torch.ones(in_features),
+            torch.linspace(grid_range[0], grid_range[1], grid_size + 1),
+        )
+        self.input_grid = nn.Parameter(self.input_grid, requires_grad=False)
+
+        self.base_weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.spline_weight = nn.Parameter(
+            torch.Tensor(out_features, in_features, grid_size + spline_order)
         )
 
-    def forward(self, x):
-        return self.linear(x) + self.base(x)
+        self.scale_noise = scale_noise
+        self.scale_base = scale_base
+        self.scale_spline = scale_spline
+
+        self.reset_parameters()
+
+    def reset_parameters(self):
+        nn.init.kaiming_uniform_(self.base_weight, a=np.sqrt(5) * self.scale_base)
+
+        with torch.no_grad():
+            noise = (
+                torch.rand(self.grid_size + 1, self.in_features, self.out_features) - 0.5
+            ) * self.scale_noise / self.grid_size
+            coeff = self.curve2coeff(self.input_grid, noise)
+            self.spline_weight.data.copy_(
+                (self.scale_spline if self.scale_spline is not None else 1.0) * coeff
+            )
+
+    def b_splines(self, x: torch.Tensor):
+        assert x.dim() == 2 and x.size(1) == self.in_features
+
+        grid: torch.Tensor = self.input_grid
+        h = (grid[:, -1:] - grid[:, 0:1]) / self.grid_size
+        device = grid.device
+
+        arange_left = torch.arange(
+            self.spline_order, 0, -1, device=device, dtype=grid.dtype
+        ).unsqueeze(0)
+        left_pad = grid[:, 0:1] - arange_left * h
+
+        arange_right = torch.arange(
+            1, self.spline_order + 1, device=device, dtype=grid.dtype
+        ).unsqueeze(0)
+        right_pad = grid[:, -1:] + arange_right * h
+
+        grid = torch.cat([left_pad, grid, right_pad], dim=1)
+
+        x = x.unsqueeze(-1)
+        grid = grid.unsqueeze(0)
+
+        bases = ((x >= grid[:, :, :-1]) & (x < grid[:, :, 1:])).to(x.dtype)
+
+        for k in range(1, self.spline_order + 1):
+            denom1 = grid[:, :, k:-1] - grid[:, :, : -(k + 1)]
+            denom2 = grid[:, :, k + 1 :] - grid[:, :, 1:-k]
+            term1 = (x - grid[:, :, : -(k + 1)]) / (denom1 + 1e-12) * bases[:, :, :-1]
+            term2 = (grid[:, :, k + 1 :] - x) / (denom2 + 1e-12) * bases[:, :, 1:]
+            bases = term1 + term2
+
+        return bases.contiguous()
+
+    def curve2coeff(self, x: torch.Tensor, y: torch.Tensor):
+        A = self.b_splines(x.transpose(0, 1)).transpose(0, 1)
+        B = y.transpose(0, 1)
+        solution = torch.linalg.lstsq(A, B).solution
+        result = solution.permute(2, 0, 1)
+        return result.contiguous()
+
+    def forward(self, x: torch.Tensor):
+        base_out = F.linear(self.base_activation(x), self.base_weight)
+        spline_out = F.linear(
+            self.b_splines(x).view(x.size(0), -1),
+            self.spline_weight.view(self.out_features, -1),
+        )
+        return base_out + spline_out
 
 
 class InverseKANModel(nn.Module):
+    """
+    结构修复后，与 forward 的 FertilizerKAN 同类：
+    2 层 KANLayer，默认 grid_size=10。
+    """
+
     def __init__(self, input_dim=2, hidden_dim=16, output_dim=1):
         super().__init__()
-        self.net = nn.Sequential(
-            KANLayer(input_dim, hidden_dim),
-            nn.Tanh(),
-            KANLayer(hidden_dim, hidden_dim),
-            nn.Tanh(),
-            nn.Linear(hidden_dim, output_dim)
-        )
+        self.kan1 = KANLayer(input_dim, hidden_dim, grid_size=10)
+        self.kan2 = KANLayer(hidden_dim, output_dim, grid_size=10)
 
     def forward(self, x):
-        return self.net(x)
+        x = self.kan1(x)
+        x = self.kan2(x)
+        return x
 
 
 def _ensure_save_dir(save_dir):
@@ -155,8 +250,8 @@ def save_inverse_artifacts(
     x_max,
     y_min,
     y_max,
-    x_train_full_raw,
-    y_train_full_raw,
+    x_train_domain_raw,
+    y_train_domain_raw,
     idx_tr,
     idx_val,
     idx_te,
@@ -167,6 +262,15 @@ def save_inverse_artifacts(
         "artifact_type": "inverse_model_bundle",
         "model_name": "KAN",
         "model_class": "InverseKANModel",
+        "architecture_repair": True,
+        "architecture_details": {
+            "family": "spline_kan",
+            "layers": 2,
+            "grid_size": 10,
+            "spline_order": 3,
+            "base_activation": "SiLU",
+            "note": "repaired to match forward KAN family",
+        },
         "weight_path": model_path.replace("\\", "/"),
         "data_path": data_path,
         "seed": int(seed),
@@ -180,10 +284,10 @@ def save_inverse_artifacts(
                 "opening_low": 20.0,
                 "opening_mid": 35.0,
                 "opening_high": 50.0,
-            }
+            },
         },
         "normalization_scope": {
-            "inverse": "train+val"
+            "inverse": "train_only"
         },
         "hyperparameters": {
             "hidden_dim": int(hidden_dim),
@@ -201,18 +305,18 @@ def save_inverse_artifacts(
             "y_max": float(y_max),
         },
         "training_domain": {
-            "target_mass_min": float(x_train_full_raw[:, 0].min()),
-            "target_mass_max": float(x_train_full_raw[:, 0].max()),
-            "opening_min": float(x_train_full_raw[:, 1].min()),
-            "opening_max": float(x_train_full_raw[:, 1].max()),
-            "speed_min": float(y_train_full_raw.min()),
-            "speed_max": float(y_train_full_raw.max()),
+            "target_mass_min": float(x_train_domain_raw[:, 0].min()),
+            "target_mass_max": float(x_train_domain_raw[:, 0].max()),
+            "opening_min": float(x_train_domain_raw[:, 1].min()),
+            "opening_max": float(x_train_domain_raw[:, 1].max()),
+            "speed_min": float(y_train_domain_raw.min()),
+            "speed_max": float(y_train_domain_raw.max()),
         },
         "split_info": {
             "train_size": int(len(idx_tr)),
             "val_size": int(len(idx_val)),
             "test_size": int(len(idx_te)),
-        }
+        },
     }
 
     with open(meta_path, "w", encoding="utf-8") as f:
@@ -330,7 +434,7 @@ def train_and_eval_inverse_kan_v2(
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("\n=== 训练 反向 KAN（严格披露版，转速优先口径） ===")
+    print("\n=== 训练 反向 KAN（结构修复 + train-only normalization，转速优先口径） ===")
     print(f"使用设备: {device}")
 
     X_raw, y_raw = load_data(data_path)
@@ -352,15 +456,12 @@ def train_and_eval_inverse_kan_v2(
     y_test_raw = y_inv_all[idx_te]
     _ = y_test_raw  # 保留变量语义，避免静态检查提示
 
-    # 与作者当前口径一致：反向归一化统计量使用 train+val
-    train_full_idx = np.concatenate([idx_tr, idx_val])
-    X_train_full_raw = X_inv_all[train_full_idx]
-    y_train_full_raw = y_inv_all[train_full_idx]
-
-    x_min = X_train_full_raw.min(axis=0, keepdims=True)
-    x_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = float(y_train_full_raw.min())
-    y_max = float(y_train_full_raw.max())
+    # 方法学修正：反向归一化统计量仅使用 train 集
+    # 最终模型仍使用 train+val 训练，但归一化参数固定来自 train，避免验证集信息泄漏
+    x_min = X_train_raw.min(axis=0, keepdims=True)
+    x_max = X_train_raw.max(axis=0, keepdims=True)
+    y_min = float(y_train_raw.min())
+    y_max = float(y_train_raw.max())
 
     def norm_x(x):
         return (x - x_min) / (x_max - x_min + EPS)
@@ -383,7 +484,7 @@ def train_and_eval_inverse_kan_v2(
     best_lr = None
     best_weight_decay = None
 
-    print(">>> 开始搜索反向 KAN 最优超参数（基于 val R²，原始物理量空间）...")
+    print(">>> 开始搜索反向 KAN 最优超参数（val R²；归一化统计量仅来自 train）...")
     for hidden_dim in hidden_dim_candidates:
         for lr in lr_candidates:
             for wd in weight_decay_candidates:
@@ -483,7 +584,7 @@ def train_and_eval_inverse_kan_v2(
     opening_dist_all = _count_openings(test_opening)
     opening_dist_main = _count_openings(opening_main)
 
-    print("\n===== 反向 KAN（转速优先口径）测试结果 =====")
+    print("\n===== 反向 KAN（结构修复后，转速优先口径）测试结果 =====")
     if n_main > 0:
         print(
             f"主结果（策略一致子集）: n = {n_main:3d} / {n_all:3d} "
@@ -519,6 +620,8 @@ def train_and_eval_inverse_kan_v2(
     print("\n--- 结果解释建议 ---")
     print("主结果基于‘实际开度 = 策略推荐开度’的测试样本。")
     print("为避免选择性报告，应始终与全测试集结果并列呈现，并说明主结果样本占比。")
+    print("本版方法学口径已修正：归一化统计量仅使用 train 集，最终模型仍在 train+val 上训练。")
+    print("注意：本次为结构修复 + 口径修订后的反向 KAN，旧版权重不可直接复用。")
 
     model_path = None
     meta_path = None
@@ -542,8 +645,8 @@ def train_and_eval_inverse_kan_v2(
             x_max=x_max,
             y_min=y_min,
             y_max=y_max,
-            x_train_full_raw=X_train_full_raw,
-            y_train_full_raw=y_train_full_raw,
+            x_train_domain_raw=X_train_raw,
+            y_train_domain_raw=y_train_raw,
             idx_tr=idx_tr,
             idx_val=idx_val,
             idx_te=idx_te,

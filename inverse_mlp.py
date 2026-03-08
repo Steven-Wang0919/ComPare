@@ -2,7 +2,7 @@
 """
 inverse_mlp.py
 
-反向 MLP 模型（严格披露版）：
+反向 MLP 模型（train-only normalization 版）：
     输入:  [目标质量 (g/min), 排肥口开度 (mm)]
     输出:  [排肥轴转速 (r/min)]
 
@@ -14,7 +14,8 @@ inverse_mlp.py
    - 主结果占比 main_ratio
    - 主结果与全测试集的 R² / ARE 并列输出
 3. 增加策略一致子集在不同开度上的样本分布，避免选择性报告风险
-4. 返回更完整的统计信息，便于 compare / 论文表格 / 附录使用
+4. 将反向任务归一化统计量改为仅使用 train，避免验证集信息泄漏
+5. 最终模型仍使用 train+val 训练，但归一化参数固定来自 train
 """
 
 import numpy as np
@@ -85,11 +86,10 @@ def train_and_eval_inverse_mlp(
     if alpha_candidates is None:
         alpha_candidates = [1e-6, 1e-5, 1e-4, 1e-3]
 
-    print("\n=== 训练 反向 MLP（严格披露版，转速优先口径） ===")
+    print("\n=== 训练 反向 MLP（train-only normalization，转速优先口径） ===")
 
     X_raw, y_raw = load_data(data_path)
 
-    n_samples = len(y_raw)
     idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
 
     # 反向任务：
@@ -105,17 +105,13 @@ def train_and_eval_inverse_mlp(
     y_train_raw = y_inv_all[idx_tr]
     y_val_raw = y_inv_all[idx_val]
     y_test_raw = y_inv_all[idx_te]
+    _ = y_test_raw
 
-    # 与原实现一致：反向任务的归一化统计量使用 train+val
-    # 若后续希望进一步提高协议严格性，可单独再改成仅 train
-    train_full_idx = np.concatenate([idx_tr, idx_val])
-    X_train_full_raw = X_inv_all[train_full_idx]
-    y_train_full_raw = y_inv_all[train_full_idx]
-
-    X_min = X_train_full_raw.min(axis=0, keepdims=True)
-    X_max = X_train_full_raw.max(axis=0, keepdims=True)
-    y_min = float(y_train_full_raw.min())
-    y_max = float(y_train_full_raw.max())
+    # 方法学修复：反向任务归一化统计量仅使用 train
+    X_min = X_train_raw.min(axis=0, keepdims=True)
+    X_max = X_train_raw.max(axis=0, keepdims=True)
+    y_min = float(y_train_raw.min())
+    y_max = float(y_train_raw.max())
 
     def norm_x(x):
         return (x - X_min) / (X_max - X_min + EPS)
@@ -164,6 +160,7 @@ def train_and_eval_inverse_mlp(
         f"alpha={best_alpha}, solver='lbfgs', val R²={best_r2_val:.6f}"
     )
 
+    # 最终模型仍用 train+val 训练，但归一化参数固定来自 train
     X_train_val_raw = np.vstack([X_train_raw, X_val_raw])
     y_train_val_raw = np.hstack([y_train_raw, y_val_raw])
 
@@ -181,22 +178,18 @@ def train_and_eval_inverse_mlp(
 
     print("\n>>> 开始测试集评估（主结果=策略一致子集，补充=全测试集）...")
 
-    # 全测试集上的真实物理量
     test_mass = y_raw[idx_te]
     test_opening = X_raw[idx_te, 0]
     test_speed_true = X_raw[idx_te, 1]
 
-    # 全测试集预测
     X_test_norm = norm_x(X_test_raw)
     pred_test_norm = mlp_final.predict(X_test_norm)
     pred_test_speed = denorm_y(pred_test_norm)
 
-    # 全测试集指标
     r2_all = _safe_r2(test_speed_true, pred_test_speed)
     are_all = _safe_are(test_speed_true, pred_test_speed)
     n_all = int(len(test_speed_true))
 
-    # 策略一致子集
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
         dtype=float
@@ -224,7 +217,6 @@ def train_and_eval_inverse_mlp(
         r2_main = np.nan
         are_main = np.nan
 
-    # 分布披露：全测试集 / 主结果子集的开度分布
     opening_dist_all = _count_openings(test_opening)
     opening_dist_main = _count_openings(opening_main)
 
@@ -264,41 +256,29 @@ def train_and_eval_inverse_mlp(
     print("\n--- 结果解释建议 ---")
     print("主结果基于‘实际开度 = 策略推荐开度’的测试样本。")
     print("为避免选择性报告，应始终与全测试集结果并列呈现，并说明主结果样本占比。")
+    print("本版方法学修订：归一化统计量仅来自 train，val 仅用于调参。")
 
     return {
-        # 主结果
         "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,
         "are_main": float(are_main) if not np.isnan(are_main) else np.nan,
         "n_main": n_main,
         "main_ratio": float(main_ratio) if not np.isnan(main_ratio) else np.nan,
-
-        # 全测试集
         "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
         "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
         "n_all": n_all,
-
-        # 超参数
         "best_hidden": best_hidden,
         "best_alpha": best_alpha,
-
-        # 全测试集明细
         "y_true_all": np.asarray(test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
         "opening_all": np.asarray(test_opening),
         "strategy_opening_all": np.asarray(strategy_opening_all),
-
-        # 主结果子集明细
         "y_true_main": np.asarray(y_true_main),
         "y_pred_main": np.asarray(y_pred_main),
         "mass_main": np.asarray(mass_main),
         "opening_main": np.asarray(opening_main),
         "strategy_opening_main": np.asarray(strategy_opening_main),
-
-        # 策略一致掩码
         "policy_mask": np.asarray(policy_mask),
-
-        # 披露统计
         "opening_dist_all": opening_dist_all,
         "opening_dist_main": opening_dist_main,
     }
