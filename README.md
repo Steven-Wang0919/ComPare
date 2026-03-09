@@ -173,11 +173,14 @@ data/dataset.xlsx
 
 * 输入做 0-1 归一化
 * 输出做 0-1 归一化
-* **归一化统计范围使用 `train + val`**
+* **归一化统计范围使用 `train`**
 
 说明：
 
-* 反向 KAN 与交互系统中的反向部署均采用该口径
+* 超参数选择阶段使用 `train -> val`
+* 最终模型使用 `train + val` 重新训练
+* 但归一化统计量仍严格来自 `train`
+* 反向 KAN 与交互系统中的反向部署均遵循该口径
 
 ### 4.3 调参与最终训练
 
@@ -205,6 +208,7 @@ data/dataset.xlsx
 > 实际开度 = 策略推荐开度
 
 该部分结果对应论文中的主要结论，因为它与“转速优先”控制逻辑保持一致。
+在当前默认划分下，该主评估子集覆盖测试集约 29.5%（13/44）；其余样本仅纳入全测试集补充评估。
 
 #### （2）补充评估口径：全测试集
 
@@ -292,8 +296,8 @@ data/dataset.xlsx
 
 输出文件通常包括：
 
-* `output_data/model_metrics.csv`
-* `output_data/model_predictions.csv`
+* `output_data/forward_model_metrics.csv`
+* `output_data/forward_model_predictions.csv`
 
 #### `plot_figures.py`
 
@@ -320,7 +324,7 @@ data/dataset.xlsx
 * 任务形式：输入 `[目标排肥量, 开度]`，输出 `转速`
 * 主评估口径：策略一致子集
 * 补充评估口径：全测试集
-* 归一化统计范围：`train + val`
+* 归一化统计范围：`train`
 * 保存反向部署工件：
 
   * `path/kan_inverse.pth`
@@ -398,7 +402,7 @@ data/dataset.xlsx
   * `path/kan_inverse.pth`
   * `path/kan_inverse_meta.json`
 * `path/model_meta.json` 仅保存**交互系统配置**
-* 若工件缺失，则回退到“从原始数据重算归一化参数”的旧逻辑
+* 若工件缺失或工件与权重不匹配，当前版本会直接报错并拒绝启动阶段自动回退
 * 当前交互系统加入了：
 
   * 输入越界检查
@@ -503,8 +507,8 @@ python interactive_app.py
 
 说明：
 
-* 若 `path/` 中存在旧版权重文件，而当前模型结构已更新，则程序可能提示加载失败后自动重新训练
-* 这是正常现象，不代表程序运行错误
+* 若 `path/` 中存在旧版权重文件，而当前模型结构已更新，程序会提示加载失败
+* 当前版本不会在启动阶段自动重新训练，需由用户在菜单中显式选择重训练，或先运行正式训练脚本生成新工件
 * 建议在最终整理工程时清理旧版 `path/` 目录，避免模型版本混淆
 
 ---
