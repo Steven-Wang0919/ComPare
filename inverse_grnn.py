@@ -2,28 +2,19 @@
 """
 inverse_grnn.py
 
-反向 GRNN 模型（train-only normalization 版）：
-    输入:  [目标质量 (g/min), 排肥口开度 (mm)]
-    输出:  [排肥轴转速 (r/min)]
-
-任务定义（与论文口径一致）：
-    本模型服务于“转速优先”控制方法：
-        1) 先根据目标质量确定策略开度
-        2) 在策略开度确定后，再调节排肥轴转速
-
-因此：
-    - 主评估对象：满足“实际开度 == 策略开度”的测试样本（策略一致子集）
-    - 补充评估对象：全测试集（仅作透明展示，不作为主结论）
-
-本版修订重点：
-1. 将反向任务归一化统计量改为仅使用 train
-2. 最终模型仍使用 train+val 训练，但归一化参数固定来自 train
+反向 GRNN：
+- 主结果 = 策略一致子集
+- 补充结果 = 全测试集
+- 独立运行时输出到 runs/<timestamp>_inverse_grnn/
 """
 
+import os
 import numpy as np
+import pandas as pd
 from sklearn.metrics import r2_score
 
 from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
 
 
 THRESHOLD_LOW_MID = 2800.0
@@ -63,9 +54,7 @@ def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
     stats = {}
     for v in opening_values:
         stats[f"{int(v)}mm"] = int(np.isclose(openings, v, atol=atol).sum())
-    stats["other"] = int(
-        len(openings) - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
-    )
+    stats["other"] = int(len(openings) - sum(stats[k] for k in ["20mm", "35mm", "50mm"]))
     return stats
 
 
@@ -78,11 +67,8 @@ class InverseGRNN:
     def fit(self, X, y):
         self.X = np.asarray(X, dtype=float)
         self.y = np.asarray(y, dtype=float).reshape(-1)
-
         if self.X.ndim != 2:
-            raise ValueError("X 必须是二维数组，形状应为 (n_samples, n_features)")
-        if self.y.ndim != 1:
-            raise ValueError("y 必须是一维数组，形状应为 (n_samples,)")
+            raise ValueError("X 必须是二维数组")
         if len(self.X) != len(self.y):
             raise ValueError("X 和 y 的样本数必须一致")
         if len(self.X) == 0:
@@ -92,11 +78,9 @@ class InverseGRNN:
         diff = self.X - x
         dist2 = np.sum(diff ** 2, axis=1)
         w = np.exp(-dist2 / (2.0 * self.sigma ** 2))
-
         w_sum = w.sum()
         if w_sum <= EPS:
             return float(self.y.mean())
-
         return float(np.sum(w * self.y) / w_sum)
 
     def predict(self, X):
@@ -109,6 +93,7 @@ class InverseGRNN:
 def train_and_eval_inverse_grnn(
     data_path="data/dataset.xlsx",
     sigma_grid=None,
+    save_outputs_dir=None,
 ):
     if sigma_grid is None:
         sigma_grid = np.linspace(0.1, 4.0, 40)
@@ -120,22 +105,16 @@ def train_and_eval_inverse_grnn(
     print("\n=== 训练 反向 GRNN（train-only normalization，转速优先口径） ===")
 
     X_raw, y_raw = load_data(data_path)
-
     train_idx, val_idx, test_idx = get_train_val_test_indices(X=X_raw, y=y_raw)
 
-    # 反向任务：
-    # 输入 = [质量, 开度]
-    # 输出 = 转速
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
     X_train_raw = X_inv_all[train_idx]
     y_train_raw = y_inv_all[train_idx]
-
     X_val_raw = X_inv_all[val_idx]
     y_val_raw = y_inv_all[val_idx]
 
-    # 方法学修复：归一化统计量仅使用 train
     x_min = X_train_raw.min(axis=0, keepdims=True)
     x_max = X_train_raw.max(axis=0, keepdims=True)
     y_min = float(y_train_raw.min())
@@ -157,14 +136,11 @@ def train_and_eval_inverse_grnn(
     best_sigma = None
     best_r2_val = -np.inf
 
-    print(">>> 正在为反向 GRNN 选择最优 σ（基于 val R²，原始物理量空间）...")
     for s in sigma_grid:
         model_tmp = InverseGRNN(sigma=float(s))
         model_tmp.fit(X_train_norm, y_train_norm)
-
         y_val_pred_norm = model_tmp.predict(X_val_norm)
         y_val_pred_raw = denorm_y(y_val_pred_norm)
-
         r2_val = r2_score(y_val_raw, y_val_pred_raw)
 
         if r2_val > best_r2_val:
@@ -176,7 +152,6 @@ def train_and_eval_inverse_grnn(
 
     print(f"反向 GRNN 最优 σ = {best_sigma:.4f}, val R² = {best_r2_val:.6f}")
 
-    # 最终模型仍用 train+val 训练，但归一化参数固定来自 train
     train_full_idx = np.concatenate([train_idx, val_idx])
     X_train_full_raw = X_inv_all[train_full_idx]
     y_train_full_raw = y_inv_all[train_full_idx]
@@ -186,8 +161,6 @@ def train_and_eval_inverse_grnn(
 
     inv_grnn = InverseGRNN(sigma=best_sigma)
     inv_grnn.fit(X_train_full_norm, y_train_full_norm)
-
-    print("\n>>> 开始测试集评估（主结果=策略一致子集，补充=全测试集）...")
 
     test_mass = y_raw[test_idx]
     test_opening = X_raw[test_idx, 0]
@@ -205,7 +178,7 @@ def train_and_eval_inverse_grnn(
 
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
-        dtype=float
+        dtype=float,
     )
     policy_mask = np.isclose(test_opening, strategy_opening_all, atol=0.1)
 
@@ -218,7 +191,6 @@ def train_and_eval_inverse_grnn(
         strategy_opening_main = strategy_opening_all[policy_mask]
         y_true_main = test_speed_true[policy_mask]
         y_pred_main = pred_test_speed[policy_mask]
-
         r2_main = _safe_r2(y_true_main, y_pred_main)
         are_main = _safe_are(y_true_main, y_pred_main)
     else:
@@ -233,50 +205,35 @@ def train_and_eval_inverse_grnn(
     opening_dist_all = _count_openings(test_opening)
     opening_dist_main = _count_openings(opening_main)
 
-    print("\n===== 反向 GRNN（转速优先口径）测试结果 =====")
-    if n_main > 0:
-        print(
-            f"主结果（策略一致子集）: n = {n_main:3d} / {n_all:3d} "
-            f"({main_ratio * 100:.2f}%), R² = {r2_main:.4f}, ARE = {are_main:.4f}%"
-        )
-    else:
-        print(
-            f"主结果（策略一致子集）: n =   0 / {n_all:3d} "
-            f"(0.00%), R² = NaN, ARE = NaN"
-        )
+    if save_outputs_dir is not None:
+        df_all = pd.DataFrame({
+            "target_mass_g_min": test_mass,
+            "actual_opening_mm": test_opening,
+            "strategy_opening_mm": strategy_opening_all,
+            "true_speed_r_min": test_speed_true,
+            "inverse_GRNN_pred": pred_test_speed,
+            "policy_match": policy_mask.astype(int),
+        })
+        save_dataframe(df_all, os.path.join(save_outputs_dir, "inverse_grnn_predictions_all.csv"))
 
-    print(
-        f"补充结果（全测试集）  : n = {n_all:3d}, "
-        f"R² = {r2_all:.4f}, ARE = {are_all:.4f}%"
-    )
-
-    print("\n--- 开度分布披露 ---")
-    print(
-        "全测试集开度分布: "
-        f"20mm={opening_dist_all['20mm']}, "
-        f"35mm={opening_dist_all['35mm']}, "
-        f"50mm={opening_dist_all['50mm']}, "
-        f"other={opening_dist_all['other']}"
-    )
-    print(
-        "主结果子集开度分布: "
-        f"20mm={opening_dist_main['20mm']}, "
-        f"35mm={opening_dist_main['35mm']}, "
-        f"50mm={opening_dist_main['50mm']}, "
-        f"other={opening_dist_main['other']}"
-    )
-
-    print("本版方法学修订：归一化统计量仅来自 train，val 仅用于调参。")
+        df_main = pd.DataFrame({
+            "target_mass_g_min": mass_main,
+            "actual_opening_mm": opening_main,
+            "strategy_opening_mm": strategy_opening_main,
+            "true_speed_r_min": y_true_main,
+            "inverse_GRNN_pred": y_pred_main,
+        })
+        save_dataframe(df_main, os.path.join(save_outputs_dir, "inverse_grnn_predictions_main.csv"))
 
     return {
-        "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,
-        "are_main": float(are_main) if not np.isnan(are_main) else np.nan,
+        "r2_main": r2_main,
+        "are_main": are_main,
         "n_main": n_main,
-        "main_ratio": float(main_ratio) if not np.isnan(main_ratio) else np.nan,
-        "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
-        "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
+        "main_ratio": main_ratio,
+        "r2_all": r2_all,
+        "are_all": are_all,
         "n_all": n_all,
-        "best_sigma": float(best_sigma),
+        "best_sigma": best_sigma,
         "y_true_all": np.asarray(test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
@@ -293,5 +250,29 @@ def train_and_eval_inverse_grnn(
     }
 
 
+def main():
+    run_dir = create_run_dir("inverse_grnn")
+
+    write_manifest(
+        run_dir,
+        script_name="inverse_grnn.py",
+        data_path="data/dataset.xlsx",
+        seed=None,
+        params={"sigma_grid": "np.linspace(0.1, 4.0, 40)"},
+    )
+
+    train_and_eval_inverse_grnn(save_outputs_dir=run_dir)
+
+    append_manifest_outputs(
+        run_dir,
+        [
+            {"path": "inverse_grnn_predictions_all.csv"},
+            {"path": "inverse_grnn_predictions_main.csv"},
+        ],
+    )
+
+    print(f"\n本次运行目录：{run_dir}")
+
+
 if __name__ == "__main__":
-    train_and_eval_inverse_grnn()
+    main()

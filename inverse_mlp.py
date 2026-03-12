@@ -2,27 +2,21 @@
 """
 inverse_mlp.py
 
-反向 MLP 模型（train-only normalization 版）：
-    输入:  [目标质量 (g/min), 排肥口开度 (mm)]
-    输出:  [排肥轴转速 (r/min)]
-
-本版修订重点：
-1. 保留“主结果 = 策略一致子集；补充结果 = 全测试集”的评估框架
-2. 显式报告：
-   - 主结果样本数 n_main
-   - 全测试集样本数 n_all
-   - 主结果占比 main_ratio
-   - 主结果与全测试集的 R² / ARE 并列输出
-3. 增加策略一致子集在不同开度上的样本分布，避免选择性报告风险
-4. 将反向任务归一化统计量改为仅使用 train，避免验证集信息泄漏
-5. 最终模型仍使用 train+val 训练，但归一化参数固定来自 train
+反向 MLP：
+- 主结果 = 策略一致子集
+- 补充结果 = 全测试集
+- 默认仅返回结果，不再写仓库根目录
+- 独立运行时输出到 runs/<timestamp>_inverse_mlp/
 """
 
+import os
 import numpy as np
-from sklearn.neural_network import MLPRegressor
+import pandas as pd
 from sklearn.metrics import r2_score
+from sklearn.neural_network import MLPRegressor
 
 from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
 
 
 THRESHOLD_LOW_MID = 2800.0
@@ -62,10 +56,7 @@ def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
     stats = {}
     for v in opening_values:
         stats[f"{int(v)}mm"] = int(np.isclose(openings, v, atol=atol).sum())
-    stats["other"] = int(
-        len(openings)
-        - sum(stats[k] for k in ["20mm", "35mm", "50mm"])
-    )
+    stats["other"] = int(len(openings) - sum(stats[k] for k in ["20mm", "35mm", "50mm"]))
     return stats
 
 
@@ -75,26 +66,18 @@ def train_and_eval_inverse_mlp(
     alpha_candidates=None,
     max_iter=5000,
     random_state=0,
+    save_outputs_dir=None,
 ):
     if hidden_layer_candidates is None:
-        hidden_layer_candidates = [
-            (10,),
-            (20,),
-            (50,),
-            (20, 20),
-        ]
+        hidden_layer_candidates = [(10,), (20,), (50,), (20, 20)]
     if alpha_candidates is None:
         alpha_candidates = [1e-6, 1e-5, 1e-4, 1e-3]
 
     print("\n=== 训练 反向 MLP（train-only normalization，转速优先口径） ===")
 
     X_raw, y_raw = load_data(data_path)
-
     idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
 
-    # 反向任务：
-    # 输入 = [目标质量, 开度]
-    # 输出 = 转速
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
@@ -104,10 +87,7 @@ def train_and_eval_inverse_mlp(
 
     y_train_raw = y_inv_all[idx_tr]
     y_val_raw = y_inv_all[idx_val]
-    y_test_raw = y_inv_all[idx_te]
-    _ = y_test_raw
 
-    # 方法学修复：反向任务归一化统计量仅使用 train
     X_min = X_train_raw.min(axis=0, keepdims=True)
     X_max = X_train_raw.max(axis=0, keepdims=True)
     y_min = float(y_train_raw.min())
@@ -116,11 +96,11 @@ def train_and_eval_inverse_mlp(
     def norm_x(x):
         return (x - X_min) / (X_max - X_min + EPS)
 
-    def norm_y(y):
-        return (y - y_min) / (y_max - y_min + EPS)
+    def norm_y(v):
+        return (v - y_min) / (y_max - y_min + EPS)
 
-    def denorm_y(y_norm):
-        return y_norm * (y_max - y_min + EPS) + y_min
+    def denorm_y(v):
+        return v * (y_max - y_min + EPS) + y_min
 
     X_train = norm_x(X_train_raw)
     X_val = norm_x(X_val_raw)
@@ -130,20 +110,18 @@ def train_and_eval_inverse_mlp(
     best_hidden = None
     best_alpha = None
 
-    print(">>> 开始搜索反向 MLP 最优超参数（基于 val R²，原始物理量空间）...")
     for h in hidden_layer_candidates:
         for a in alpha_candidates:
-            mlp = MLPRegressor(
+            model = MLPRegressor(
                 hidden_layer_sizes=h,
                 alpha=a,
                 solver="lbfgs",
                 max_iter=max_iter,
                 random_state=random_state,
             )
+            model.fit(X_train, y_train_norm)
 
-            mlp.fit(X_train, y_train_norm)
-
-            y_val_pred_norm = mlp.predict(X_val)
+            y_val_pred_norm = model.predict(X_val)
             y_val_pred = denorm_y(y_val_pred_norm)
             r2_val = r2_score(y_val_raw, y_val_pred)
 
@@ -160,7 +138,6 @@ def train_and_eval_inverse_mlp(
         f"alpha={best_alpha}, solver='lbfgs', val R²={best_r2_val:.6f}"
     )
 
-    # 最终模型仍用 train+val 训练，但归一化参数固定来自 train
     X_train_val_raw = np.vstack([X_train_raw, X_val_raw])
     y_train_val_raw = np.hstack([y_train_raw, y_val_raw])
 
@@ -176,8 +153,6 @@ def train_and_eval_inverse_mlp(
     )
     mlp_final.fit(X_train_val, y_train_val_norm)
 
-    print("\n>>> 开始测试集评估（主结果=策略一致子集，补充=全测试集）...")
-
     test_mass = y_raw[idx_te]
     test_opening = X_raw[idx_te, 0]
     test_speed_true = X_raw[idx_te, 1]
@@ -192,7 +167,7 @@ def train_and_eval_inverse_mlp(
 
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
-        dtype=float
+        dtype=float,
     )
     policy_mask = np.isclose(test_opening, strategy_opening_all, atol=0.1)
 
@@ -205,7 +180,6 @@ def train_and_eval_inverse_mlp(
         strategy_opening_main = strategy_opening_all[policy_mask]
         y_true_main = test_speed_true[policy_mask]
         y_pred_main = pred_test_speed[policy_mask]
-
         r2_main = _safe_r2(y_true_main, y_pred_main)
         are_main = _safe_are(y_true_main, y_pred_main)
     else:
@@ -221,50 +195,38 @@ def train_and_eval_inverse_mlp(
     opening_dist_main = _count_openings(opening_main)
 
     print("\n===== 反向 MLP（转速优先口径）测试结果 =====")
-    if n_main > 0:
-        print(
-            f"主结果（策略一致子集）: n = {n_main:3d} / {n_all:3d} "
-            f"({main_ratio * 100:.2f}%), R² = {r2_main:.4f}, ARE = {are_main:.4f}%"
-        )
-    else:
-        print(
-            f"主结果（策略一致子集）: n =   0 / {n_all:3d} "
-            f"(0.00%), R² = NaN, ARE = NaN"
-        )
-
     print(
-        f"补充结果（全测试集）  : n = {n_all:3d}, "
-        f"R² = {r2_all:.4f}, ARE = {are_all:.4f}%"
+        f"主结果: n={n_main}/{n_all}, R²={r2_main}, ARE={are_main}% | "
+        f"全测试集: R²={r2_all}, ARE={are_all}%"
     )
 
-    print("\n--- 开度分布披露 ---")
-    print(
-        "全测试集开度分布: "
-        f"20mm={opening_dist_all['20mm']}, "
-        f"35mm={opening_dist_all['35mm']}, "
-        f"50mm={opening_dist_all['50mm']}, "
-        f"other={opening_dist_all['other']}"
-    )
-    print(
-        "主结果子集开度分布: "
-        f"20mm={opening_dist_main['20mm']}, "
-        f"35mm={opening_dist_main['35mm']}, "
-        f"50mm={opening_dist_main['50mm']}, "
-        f"other={opening_dist_main['other']}"
-    )
+    if save_outputs_dir is not None:
+        df_all = pd.DataFrame({
+            "target_mass_g_min": test_mass,
+            "actual_opening_mm": test_opening,
+            "strategy_opening_mm": strategy_opening_all,
+            "true_speed_r_min": test_speed_true,
+            "inverse_MLP_pred": pred_test_speed,
+            "policy_match": policy_mask.astype(int),
+        })
+        save_dataframe(df_all, os.path.join(save_outputs_dir, "inverse_mlp_predictions_all.csv"))
 
-    print("\n--- 结果解释建议 ---")
-    print("主结果基于‘实际开度 = 策略推荐开度’的测试样本。")
-    print("为避免选择性报告，应始终与全测试集结果并列呈现，并说明主结果样本占比。")
-    print("本版方法学修订：归一化统计量仅来自 train，val 仅用于调参。")
+        df_main = pd.DataFrame({
+            "target_mass_g_min": mass_main,
+            "actual_opening_mm": opening_main,
+            "strategy_opening_mm": strategy_opening_main,
+            "true_speed_r_min": y_true_main,
+            "inverse_MLP_pred": y_pred_main,
+        })
+        save_dataframe(df_main, os.path.join(save_outputs_dir, "inverse_mlp_predictions_main.csv"))
 
     return {
-        "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,
-        "are_main": float(are_main) if not np.isnan(are_main) else np.nan,
+        "r2_main": r2_main,
+        "are_main": are_main,
         "n_main": n_main,
-        "main_ratio": float(main_ratio) if not np.isnan(main_ratio) else np.nan,
-        "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
-        "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
+        "main_ratio": main_ratio,
+        "r2_all": r2_all,
+        "are_all": are_all,
         "n_all": n_all,
         "best_hidden": best_hidden,
         "best_alpha": best_alpha,
@@ -284,5 +246,34 @@ def train_and_eval_inverse_mlp(
     }
 
 
+def main():
+    run_dir = create_run_dir("inverse_mlp")
+
+    write_manifest(
+        run_dir,
+        script_name="inverse_mlp.py",
+        data_path="data/dataset.xlsx",
+        seed=0,
+        params={
+            "hidden_layer_candidates": [(10,), (20,), (50,), (20, 20)],
+            "alpha_candidates": [1e-6, 1e-5, 1e-4, 1e-3],
+            "max_iter": 5000,
+            "random_state": 0,
+        },
+    )
+
+    train_and_eval_inverse_mlp(save_outputs_dir=run_dir)
+
+    append_manifest_outputs(
+        run_dir,
+        [
+            {"path": "inverse_mlp_predictions_all.csv"},
+            {"path": "inverse_mlp_predictions_main.csv"},
+        ],
+    )
+
+    print(f"\n本次运行目录：{run_dir}")
+
+
 if __name__ == "__main__":
-    train_and_eval_inverse_mlp()
+    main()

@@ -1,41 +1,37 @@
 # -*- coding: utf-8 -*-
 """
-生成论文所需的高质量图像（联动兼容版）
+plot_figures.py
+
+为 compare_all.py 输出结果生成论文图像。
 
 输入：
-1. 正向任务（自动兼容两套命名）
-   - ./output_data/forward_model_metrics.csv
-   - ./output_data/forward_model_predictions.csv
-   - 若不存在，则回退到旧命名：
-     - ./output_data/model_metrics.csv
-     - ./output_data/model_predictions.csv
+- 优先读取指定 run 目录，例如：
+  runs/20260312T120000_compare_all/
+    - forward_model_metrics.csv
+    - forward_model_predictions.csv
+    - inverse_model_metrics.csv
+    - inverse_model_predictions_all.csv
+    - inverse_model_predictions_main.csv
 
-2. 反向任务（若存在则自动绘图）
-   - ./output_data/inverse_model_metrics.csv
-   - ./output_data/inverse_model_predictions_all.csv
-   - ./output_data/inverse_model_predictions_main.csv
+兼容：
+- 若用户显式传入旧目录（如 output_data），也可正常工作
 
-输出（保存到 ./output_picture/）：
-正向：
-- r2_comparison_zoomed.png
-- are_comparison_zoomed.png
-- true_vs_predicted.png
-- residuals_distribution.png
+输出：
+- 默认保存到 <run_dir>/figures/
+- 也可通过 --pic-dir 显式指定
 
-反向（若检测到反向文件）：
-- inverse_r2_main_vs_all.png
-- inverse_are_main_vs_all.png
-- inverse_true_vs_predicted_main.png
-- inverse_true_vs_predicted_all.png
+用法：
+1) 自动查找最新 compare_all 结果：
+   python plot_figures.py
 
-改进点：
-1. 自动兼容 compare_all.py 当前输出文件名与历史文件名
-2. 不再依赖 metrics.csv 的行顺序
-3. 按模型名显式映射指标 / 颜色 / 预测列
-4. 对输入列做严格校验，避免静默出错
-5. 兼容结构修复后的反向 KAN 命名：inverse_KAN_repaired
+2) 指定某次运行目录：
+   python plot_figures.py --run-dir runs/20260312T120000_compare_all
+
+3) 指定输入与输出目录：
+   python plot_figures.py --run-dir runs/20260312T120000_compare_all --pic-dir runs/20260312T120000_compare_all/figures
 """
 
+import argparse
 import os
 import numpy as np
 import pandas as pd
@@ -56,16 +52,16 @@ FORWARD_PRED_COL_MAP = {
     "KAN": "KAN_pred",
 }
 
-INVERSE_MODELS = ["inverse_MLP", "inverse_GRNN", "inverse_KAN_repaired"]
+INVERSE_MODELS = ["inverse_MLP", "inverse_GRNN", "inverse_KAN"]
 INVERSE_DISPLAY_MAP = {
     "inverse_MLP": "inverse_MLP",
     "inverse_GRNN": "inverse_GRNN",
-    "inverse_KAN_repaired": "inverse_KAN\n(repaired)",
+    "inverse_KAN": "inverse_KAN",
 }
 INVERSE_PRED_COL_MAP = {
     "inverse_MLP": "inverse_MLP_pred",
     "inverse_GRNN": "inverse_GRNN_pred",
-    "inverse_KAN_repaired": "inverse_KAN_repaired_pred",
+    "inverse_KAN": "inverse_KAN_pred",
 }
 
 
@@ -126,6 +122,48 @@ def _build_metric_map(df_metrics, model_col, required_metric_cols, expected_mode
     return metric_maps
 
 
+def _find_latest_compare_all_run(runs_root="runs"):
+    if not os.path.isdir(runs_root):
+        return None
+
+    candidates = []
+    for name in os.listdir(runs_root):
+        full = os.path.join(runs_root, name)
+        if not os.path.isdir(full):
+            continue
+        if name.endswith("_compare_all"):
+            metrics_path = os.path.join(full, "forward_model_metrics.csv")
+            pred_path = os.path.join(full, "forward_model_predictions.csv")
+            if os.path.exists(metrics_path) and os.path.exists(pred_path):
+                candidates.append(full)
+
+    if not candidates:
+        return None
+
+    candidates.sort()
+    return candidates[-1]
+
+
+def _resolve_run_dir(explicit_run_dir=None):
+    if explicit_run_dir:
+        if not os.path.isdir(explicit_run_dir):
+            raise FileNotFoundError(f"指定的 run_dir 不存在: {explicit_run_dir}")
+        return explicit_run_dir
+
+    latest = _find_latest_compare_all_run("runs")
+    if latest is not None:
+        return latest
+
+    # 兼容旧版 output_data
+    if os.path.isdir("output_data"):
+        return "output_data"
+
+    raise FileNotFoundError(
+        "未找到可用结果目录。请先运行 compare_all.py，"
+        "或使用 --run-dir 显式指定 runs/<timestamp>_compare_all。"
+    )
+
+
 def _save_forward_plots(data_dir, pic_dir):
     metrics_path = _resolve_input_path(
         data_dir, "forward_model_metrics.csv", "model_metrics.csv"
@@ -157,7 +195,6 @@ def _save_forward_plots(data_dir, pic_dir):
     are_vals = [float(are_map[m]) for m in models]
     colors = [color_map[m] for m in models]
 
-    # 1. R² 对比图
     plt.figure(figsize=(6, 5))
     bars = plt.bar(models, r2_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black")
 
@@ -184,7 +221,6 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.close()
     print("图表已保存: r2_comparison_zoomed.png")
 
-    # 2. ARE 对比图
     plt.figure(figsize=(6, 5))
     bars = plt.bar(models, are_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black")
 
@@ -211,7 +247,6 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.close()
     print("图表已保存: are_comparison_zoomed.png")
 
-    # 3. 真值 vs 预测散点图
     y_true = df_pred["true"].values
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
 
@@ -255,7 +290,6 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.close()
     print("图表已保存: true_vs_predicted.png")
 
-    # 4. 残差分布
     plt.figure(figsize=(10, 5))
     bins = 15
     for model_name in models:
@@ -347,10 +381,11 @@ def _save_inverse_metric_barplot(df_metrics, metric_main_col, metric_all_col, yl
 
 
 def _save_inverse_scatter(df_pred, subset_name, out_path):
-    required_cols = ["true_speed"] + [INVERSE_PRED_COL_MAP[m] for m in INVERSE_MODELS]
+    true_col = "true_speed_r_min"
+    required_cols = [true_col] + [INVERSE_PRED_COL_MAP[m] for m in INVERSE_MODELS]
     _validate_required_columns(df_pred, required_cols, f"inverse predictions ({subset_name})")
 
-    y_true = df_pred["true_speed"].values
+    y_true = df_pred[true_col].values
     color_map = _build_color_map(INVERSE_MODELS)
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5), sharey=True)
@@ -415,8 +450,8 @@ def _maybe_save_inverse_plots(data_dir, pic_dir):
 
     _save_inverse_metric_barplot(
         df_metrics=df_metrics,
-        metric_main_col="ARE_main(%)",
-        metric_all_col="ARE_all(%)",
+        metric_main_col="ARE_all(%)",
+        metric_all_col="ARE_main(%)",
         ylabel="Average Relative Error (%)",
         title="Inverse Model Comparison: Main Subset vs All Test (ARE)",
         out_path=os.path.join(pic_dir, "inverse_are_main_vs_all.png"),
@@ -436,14 +471,35 @@ def _maybe_save_inverse_plots(data_dir, pic_dir):
 
 
 def main():
-    data_dir = "output_data"
-    pic_dir = "output_picture"
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--run-dir",
+        default=None,
+        help="compare_all.py 的输出目录；不传则自动寻找最新 runs/*_compare_all",
+    )
+    parser.add_argument(
+        "--pic-dir",
+        default=None,
+        help="图片输出目录；默认保存到 <run_dir>/figures",
+    )
+    args = parser.parse_args()
+
+    data_dir = _resolve_run_dir(args.run_dir)
+
+    if args.pic_dir is not None:
+        pic_dir = args.pic_dir
+    else:
+        pic_dir = os.path.join(data_dir, "figures")
+
     os.makedirs(pic_dir, exist_ok=True)
+
+    print(f"数据目录: {data_dir}")
+    print(f"图片输出目录: {pic_dir}")
 
     _save_forward_plots(data_dir, pic_dir)
     _maybe_save_inverse_plots(data_dir, pic_dir)
 
-    print("\n所有绘图完成！图片保存在 output_picture 文件夹中。")
+    print("\n所有绘图完成！")
 
 
 if __name__ == "__main__":

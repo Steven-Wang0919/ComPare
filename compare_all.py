@@ -2,26 +2,17 @@
 """
 compare_all.py
 
-综合对比六个模型：
-- 正向：MLP / GRNN / KAN
-- 反向：inverse_MLP / inverse_GRNN / inverse_KAN_repaired
+统一输出六个模型的对比结果到 runs/<timestamp>_compare_all/，
+并生成 run_manifest.json，避免仓库根目录与 output_data/ 中
+长期共存多套历史结果。
 
-职责：
-1. 调用各自的 train_and_eval_* 函数
-2. 保存正向指标表、正向预测表
-3. 保存反向指标表（主结果 + 全测试集 + 主结果占比）
-4. 保存反向全测试集预测表
-5. 保存反向主结果子集预测表
-6. 对同一任务内部不同模型的测试集真值进行强校验
-7. 不允许通过静默截断来“对齐”结果
-
-说明：
-- 正向任务误差指标统一使用平均相对误差（ARE）
-- 反向任务：
-    主结果 = 策略一致子集
-    补充结果 = 全测试集
-- 如果三种反向模型的主结果子集不一致，将直接报错
-- 反向 KAN 已完成结构修复：当前 inverse_kan.py 使用与 forward 同类的 spline/grid KAN
+输出文件：
+- forward_model_metrics.csv
+- forward_model_predictions.csv
+- inverse_model_metrics.csv
+- inverse_model_predictions_all.csv
+- inverse_model_predictions_main.csv
+- run_manifest.json
 """
 
 import os
@@ -36,57 +27,51 @@ from inverse_mlp import train_and_eval_inverse_mlp
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
 
+from run_utils import (
+    append_manifest_outputs,
+    create_run_dir,
+    save_dataframe,
+    write_manifest,
+)
 
-# =========================
-# 通用工具
-# =========================
+
 def _to_1d_array(arr, name):
-    """将输入安全转换为一维 numpy 数组。"""
     out = np.asarray(arr).reshape(-1)
     if out.size == 0:
-        raise ValueError(f"{name} 为空，无法进行模型对比。")
+        raise ValueError(f"{name} 为空，无法继续。")
     return out
 
 
 def _validate_same_length(arr1, arr2, name1, name2):
-    """校验两个数组长度是否一致。"""
     if len(arr1) != len(arr2):
         raise ValueError(
-            f"{name1} 与 {name2} 的长度不一致："
-            f"{name1}={len(arr1)}, {name2}={len(arr2)}。"
-            f"请检查数据划分、过滤逻辑或推理流程是否一致。"
+            f"{name1} 与 {name2} 长度不一致："
+            f"{name1}={len(arr1)}, {name2}={len(arr2)}"
         )
 
 
 def _validate_same_values(arr1, arr2, name1, name2, atol=1e-8, rtol=1e-6):
-    """校验两个数组是否逐元素一致。"""
     if not np.allclose(arr1, arr2, atol=atol, rtol=rtol, equal_nan=False):
-        diff_idx = np.where(
-            ~np.isclose(arr1, arr2, atol=atol, rtol=rtol, equal_nan=False)
-        )[0]
-        first_idx = int(diff_idx[0])
+        bad = np.where(~np.isclose(arr1, arr2, atol=atol, rtol=rtol, equal_nan=False))[0]
+        idx = int(bad[0])
         raise ValueError(
-            f"{name1} 与 {name2} 的内容不一致，无法进行公平对比。\n"
-            f"首个不一致位置: index={first_idx}, "
-            f"{name1}={arr1[first_idx]}, {name2}={arr2[first_idx]}。\n"
-            f"请检查测试集顺序、样本筛选或数据预处理是否一致。"
+            f"{name1} 与 {name2} 数值不一致，首个差异 index={idx}："
+            f"{name1}={arr1[idx]}, {name2}={arr2[idx]}"
         )
 
 
 def _validate_same_mask(mask1, mask2, name1, name2):
-    """校验两个布尔掩码是否一致。"""
     m1 = np.asarray(mask1).astype(bool).reshape(-1)
     m2 = np.asarray(mask2).astype(bool).reshape(-1)
 
     _validate_same_length(m1, m2, name1, name2)
 
     if not np.array_equal(m1, m2):
-        diff_idx = np.where(m1 != m2)[0]
-        first_idx = int(diff_idx[0])
+        bad = np.where(m1 != m2)[0]
+        idx = int(bad[0])
         raise ValueError(
-            f"{name1} 与 {name2} 不一致，无法保证主结果子集可公平比较。\n"
-            f"首个不一致位置: index={first_idx}, {name1}={m1[first_idx]}, {name2}={m2[first_idx]}。\n"
-            f"请检查策略开度规则、测试集顺序或筛样逻辑是否一致。"
+            f"{name1} 与 {name2} 不一致，首个差异 index={idx}："
+            f"{name1}={m1[idx]}, {name2}={m2[idx]}"
         )
 
 
@@ -100,17 +85,26 @@ def _fmt_float(x, ndigits=6):
     return str(x)
 
 
-# =========================
-# 正向任务汇总
-# =========================
-def run_forward_compare(output_dir):
+def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     print("\n" + "=" * 72)
     print("开始正向模型对比：MLP / GRNN / KAN")
     print("=" * 72)
 
-    mlp_res = train_and_eval_mlp()
-    grnn_res = train_and_eval_grnn()
-    kan_res = train_and_eval_kan()
+    mlp_res = train_and_eval_mlp(
+        data_path=data_path,
+        random_state=seed,
+        save_csv_path=None,
+    )
+    grnn_res = train_and_eval_grnn(
+        data_path=data_path,
+        save_csv_path=None,
+    )
+    kan_res = train_and_eval_kan(
+        data_path=data_path,
+        seed=seed,
+        save_csv_path=None,
+        save_artifacts=False,
+    )
 
     metrics = [
         {
@@ -151,8 +145,7 @@ def run_forward_compare(output_dir):
 
     df_metrics = pd.DataFrame(metrics)
     metrics_path = os.path.join(output_dir, "forward_model_metrics.csv")
-    df_metrics.to_csv(metrics_path, index=False, encoding="utf-8-sig")
-    print(f"\n正向模型指标表已保存：{metrics_path}")
+    save_dataframe(df_metrics, metrics_path)
 
     y_true_mlp = _to_1d_array(mlp_res["y_true"], "MLP y_true")
     y_true_grnn = _to_1d_array(grnn_res["y_true"], "GRNN y_true")
@@ -180,26 +173,36 @@ def run_forward_compare(output_dir):
     })
 
     pred_path = os.path.join(output_dir, "forward_model_predictions.csv")
-    df_pred.to_csv(pred_path, index=False, encoding="utf-8-sig")
-    print(f"正向预测对比表已保存：{pred_path}")
+    save_dataframe(df_pred, pred_path)
+
+    print(f"正向指标已保存：{metrics_path}")
+    print(f"正向预测已保存：{pred_path}")
 
     return {
-        "metrics_df": df_metrics,
-        "pred_df": df_pred,
+        "metrics_path": metrics_path,
+        "pred_path": pred_path,
     }
 
 
-# =========================
-# 反向任务汇总
-# =========================
-def run_inverse_compare(output_dir):
+def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     print("\n" + "=" * 72)
-    print("开始反向模型对比：inverse_MLP / inverse_GRNN / inverse_KAN_repaired")
+    print("开始反向模型对比：inverse_MLP / inverse_GRNN / inverse_KAN")
     print("=" * 72)
 
-    mlp_res = train_and_eval_inverse_mlp()
-    grnn_res = train_and_eval_inverse_grnn()
-    kan_res = train_and_eval_inverse_kan_v2()
+    mlp_res = train_and_eval_inverse_mlp(
+        data_path=data_path,
+        random_state=seed,
+        save_outputs_dir=None,
+    )
+    grnn_res = train_and_eval_inverse_grnn(
+        data_path=data_path,
+        save_outputs_dir=None,
+    )
+    kan_res = train_and_eval_inverse_kan_v2(
+        data_path=data_path,
+        seed=seed,
+        save_artifacts=False,
+    )
 
     y_true_all_mlp = _to_1d_array(mlp_res["y_true_all"], "inverse_MLP y_true_all")
     y_true_all_grnn = _to_1d_array(grnn_res["y_true_all"], "inverse_GRNN y_true_all")
@@ -225,13 +228,6 @@ def run_inverse_compare(output_dir):
     policy_mask_grnn = np.asarray(grnn_res["policy_mask"]).astype(bool).reshape(-1)
     policy_mask_kan = np.asarray(kan_res["policy_mask"]).astype(bool).reshape(-1)
 
-    _validate_same_length(y_true_all_mlp, y_pred_all_mlp, "inverse_MLP y_true_all", "inverse_MLP y_pred_all")
-    _validate_same_length(y_true_all_grnn, y_pred_all_grnn, "inverse_GRNN y_true_all", "inverse_GRNN y_pred_all")
-    _validate_same_length(y_true_all_kan, y_pred_all_kan, "inverse_KAN y_true_all", "inverse_KAN y_pred_all")
-
-    _validate_same_length(y_true_all_mlp, y_true_all_grnn, "inverse_MLP y_true_all", "inverse_GRNN y_true_all")
-    _validate_same_length(y_true_all_mlp, y_true_all_kan, "inverse_MLP y_true_all", "inverse_KAN y_true_all")
-
     _validate_same_values(y_true_all_mlp, y_true_all_grnn, "inverse_MLP y_true_all", "inverse_GRNN y_true_all")
     _validate_same_values(y_true_all_mlp, y_true_all_kan, "inverse_MLP y_true_all", "inverse_KAN y_true_all")
 
@@ -241,14 +237,8 @@ def run_inverse_compare(output_dir):
     _validate_same_values(opening_all_mlp, opening_all_grnn, "inverse_MLP opening_all", "inverse_GRNN opening_all")
     _validate_same_values(opening_all_mlp, opening_all_kan, "inverse_MLP opening_all", "inverse_KAN opening_all")
 
-    _validate_same_values(
-        strat_open_all_mlp, strat_open_all_grnn,
-        "inverse_MLP strategy_opening_all", "inverse_GRNN strategy_opening_all"
-    )
-    _validate_same_values(
-        strat_open_all_mlp, strat_open_all_kan,
-        "inverse_MLP strategy_opening_all", "inverse_KAN strategy_opening_all"
-    )
+    _validate_same_values(strat_open_all_mlp, strat_open_all_grnn, "inverse_MLP strategy_opening_all", "inverse_GRNN strategy_opening_all")
+    _validate_same_values(strat_open_all_mlp, strat_open_all_kan, "inverse_MLP strategy_opening_all", "inverse_KAN strategy_opening_all")
 
     _validate_same_mask(policy_mask_mlp, policy_mask_grnn, "inverse_MLP policy_mask", "inverse_GRNN policy_mask")
     _validate_same_mask(policy_mask_mlp, policy_mask_kan, "inverse_MLP policy_mask", "inverse_KAN policy_mask")
@@ -259,15 +249,13 @@ def run_inverse_compare(output_dir):
             "Model": "inverse_MLP",
             "DisplayName": "inverse_MLP",
             "ArchitectureNote": "",
-            "R2_main": mlp_res.get("r2_main"),
-            "ARE_main(%)": mlp_res.get("are_main"),
-            "n_main": mlp_res.get("n_main"),
-            "main_ratio": mlp_res.get("main_ratio"),
-            "R2_all": mlp_res.get("r2_all"),
-            "ARE_all(%)": mlp_res.get("are_all"),
-            "n_all": mlp_res.get("n_all"),
-            "OpeningDist_all": str(mlp_res.get("opening_dist_all")),
-            "OpeningDist_main": str(mlp_res.get("opening_dist_main")),
+            "R2_main": mlp_res["r2_main"],
+            "ARE_main(%)": mlp_res["are_main"],
+            "n_main": mlp_res["n_main"],
+            "main_ratio": mlp_res["main_ratio"],
+            "R2_all": mlp_res["r2_all"],
+            "ARE_all(%)": mlp_res["are_all"],
+            "n_all": mlp_res["n_all"],
             "Hyperparams": (
                 f"hidden={mlp_res.get('best_hidden')}, "
                 f"alpha={mlp_res.get('best_alpha')}"
@@ -278,31 +266,27 @@ def run_inverse_compare(output_dir):
             "Model": "inverse_GRNN",
             "DisplayName": "inverse_GRNN",
             "ArchitectureNote": "",
-            "R2_main": grnn_res.get("r2_main"),
-            "ARE_main(%)": grnn_res.get("are_main"),
-            "n_main": grnn_res.get("n_main"),
-            "main_ratio": grnn_res.get("main_ratio"),
-            "R2_all": grnn_res.get("r2_all"),
-            "ARE_all(%)": grnn_res.get("are_all"),
-            "n_all": grnn_res.get("n_all"),
-            "OpeningDist_all": str(grnn_res.get("opening_dist_all")),
-            "OpeningDist_main": str(grnn_res.get("opening_dist_main")),
+            "R2_main": grnn_res["r2_main"],
+            "ARE_main(%)": grnn_res["are_main"],
+            "n_main": grnn_res["n_main"],
+            "main_ratio": grnn_res["main_ratio"],
+            "R2_all": grnn_res["r2_all"],
+            "ARE_all(%)": grnn_res["are_all"],
+            "n_all": grnn_res["n_all"],
             "Hyperparams": f"sigma={_fmt_float(grnn_res.get('best_sigma'))}",
         },
         {
             "Task": "inverse",
-            "Model": "inverse_KAN_repaired",
-            "DisplayName": "inverse_KAN (repaired spline KAN)",
-            "ArchitectureNote": "repaired to match forward spline/grid KAN family",
-            "R2_main": kan_res.get("r2_main"),
-            "ARE_main(%)": kan_res.get("are_main"),
-            "n_main": kan_res.get("n_main"),
-            "main_ratio": kan_res.get("main_ratio"),
-            "R2_all": kan_res.get("r2_all"),
-            "ARE_all(%)": kan_res.get("are_all"),
-            "n_all": kan_res.get("n_all"),
-            "OpeningDist_all": str(kan_res.get("opening_dist_all")),
-            "OpeningDist_main": str(kan_res.get("opening_dist_main")),
+            "Model": "inverse_KAN",
+            "DisplayName": "inverse_KAN",
+            "ArchitectureNote": "repaired spline/grid KAN",
+            "R2_main": kan_res["r2_main"],
+            "ARE_main(%)": kan_res["are_main"],
+            "n_main": kan_res["n_main"],
+            "main_ratio": kan_res["main_ratio"],
+            "R2_all": kan_res["r2_all"],
+            "ARE_all(%)": kan_res["are_all"],
+            "n_all": kan_res["n_all"],
             "Hyperparams": (
                 f"hidden={kan_res.get('best_hidden_dim')}, "
                 f"lr={_fmt_float(kan_res.get('best_lr'))}, "
@@ -310,94 +294,83 @@ def run_inverse_compare(output_dir):
             ),
         },
     ]
-
     df_metrics = pd.DataFrame(metrics)
     metrics_path = os.path.join(output_dir, "inverse_model_metrics.csv")
-    df_metrics.to_csv(metrics_path, index=False, encoding="utf-8-sig")
-    print(f"\n反向模型指标表已保存：{metrics_path}")
+    save_dataframe(df_metrics, metrics_path)
 
-    df_all_pred = pd.DataFrame({
-        "target_mass": mass_all_mlp,
-        "actual_opening": opening_all_mlp,
-        "strategy_opening": strat_open_all_mlp,
-        "policy_match": policy_mask_mlp.astype(int),
-        "true_speed": y_true_all_mlp,
+    df_all = pd.DataFrame({
+        "target_mass_g_min": mass_all_mlp,
+        "actual_opening_mm": opening_all_mlp,
+        "strategy_opening_mm": strat_open_all_mlp,
+        "true_speed_r_min": y_true_all_mlp,
         "inverse_MLP_pred": y_pred_all_mlp,
         "inverse_GRNN_pred": y_pred_all_grnn,
-        "inverse_KAN_repaired_pred": y_pred_all_kan,
+        "inverse_KAN_pred": y_pred_all_kan,
+        "policy_match": policy_mask_mlp.astype(int),
     })
+    all_path = os.path.join(output_dir, "inverse_model_predictions_all.csv")
+    save_dataframe(df_all, all_path)
 
-    all_pred_path = os.path.join(output_dir, "inverse_model_predictions_all.csv")
-    df_all_pred.to_csv(all_pred_path, index=False, encoding="utf-8-sig")
-    print(f"反向全测试集预测表已保存：{all_pred_path}")
+    main_idx = np.where(policy_mask_mlp)[0]
+    df_main = pd.DataFrame({
+        "target_mass_g_min": mass_all_mlp[main_idx],
+        "actual_opening_mm": opening_all_mlp[main_idx],
+        "strategy_opening_mm": strat_open_all_mlp[main_idx],
+        "true_speed_r_min": y_true_all_mlp[main_idx],
+        "inverse_MLP_pred": y_pred_all_mlp[main_idx],
+        "inverse_GRNN_pred": y_pred_all_grnn[main_idx],
+        "inverse_KAN_pred": y_pred_all_kan[main_idx],
+    })
+    main_path = os.path.join(output_dir, "inverse_model_predictions_main.csv")
+    save_dataframe(df_main, main_path)
 
-    df_main_pred = df_all_pred[df_all_pred["policy_match"] == 1].copy()
-    main_pred_path = os.path.join(output_dir, "inverse_model_predictions_main.csv")
-    df_main_pred.to_csv(main_pred_path, index=False, encoding="utf-8-sig")
-    print(f"反向主结果子集预测表已保存：{main_pred_path}")
+    print(f"反向指标已保存：{metrics_path}")
+    print(f"反向全测试集预测已保存：{all_path}")
+    print(f"反向主结果子集预测已保存：{main_path}")
 
     return {
-        "metrics_df": df_metrics,
-        "all_pred_df": df_all_pred,
-        "main_pred_df": df_main_pred,
+        "metrics_path": metrics_path,
+        "all_path": all_path,
+        "main_path": main_path,
     }
 
 
-# =========================
-# 总入口
-# =========================
 def main():
-    output_dir = "output_data"
-    os.makedirs(output_dir, exist_ok=True)
+    data_path = "data/dataset.xlsx"
+    seed = 42
+    run_dir = create_run_dir("compare_all")
 
-    forward_res = run_forward_compare(output_dir)
-    inverse_res = run_inverse_compare(output_dir)
+    manifest_path = write_manifest(
+        run_dir,
+        script_name="compare_all.py",
+        data_path=data_path,
+        seed=seed,
+        params={
+            "forward_models": ["MLP", "GRNN", "KAN"],
+            "inverse_models": ["inverse_MLP", "inverse_GRNN", "inverse_KAN"],
+            "save_root": "runs",
+        },
+    )
 
-    overview_rows = []
+    print(f"\n本次运行目录：{run_dir}")
+    print(f"Manifest：{manifest_path}")
 
-    for _, row in forward_res["metrics_df"].iterrows():
-        overview_rows.append({
-            "Task": row["Task"],
-            "Model": row["Model"],
-            "DisplayName": row.get("DisplayName", row["Model"]),
-            "ArchitectureNote": row.get("ArchitectureNote", ""),
-            "Primary_R2": row["R2"],
-            "Primary_ARE(%)": row["ARE(%)"],
-            "n_main": np.nan,
-            "main_ratio": np.nan,
-            "Supplement_R2": np.nan,
-            "Supplement_ARE(%)": np.nan,
-        })
+    forward_outputs = run_forward_compare(run_dir, data_path=data_path, seed=seed)
+    inverse_outputs = run_inverse_compare(run_dir, data_path=data_path, seed=seed)
 
-    for _, row in inverse_res["metrics_df"].iterrows():
-        overview_rows.append({
-            "Task": row["Task"],
-            "Model": row["Model"],
-            "DisplayName": row.get("DisplayName", row["Model"]),
-            "ArchitectureNote": row.get("ArchitectureNote", ""),
-            "Primary_R2": row["R2_main"],
-            "Primary_ARE(%)": row["ARE_main(%)"],
-            "n_main": row["n_main"],
-            "main_ratio": row["main_ratio"],
-            "Supplement_R2": row["R2_all"],
-            "Supplement_ARE(%)": row["ARE_all(%)"],
-        })
+    append_manifest_outputs(
+        run_dir,
+        [
+            {"path": os.path.relpath(forward_outputs["metrics_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(forward_outputs["pred_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(inverse_outputs["metrics_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(inverse_outputs["all_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(inverse_outputs["main_path"], run_dir).replace("\\", "/")},
+        ],
+    )
 
-    df_overview = pd.DataFrame(overview_rows)
-    overview_path = os.path.join(output_dir, "all_model_metrics_overview.csv")
-    df_overview.to_csv(overview_path, index=False, encoding="utf-8-sig")
-    print(f"\n总览指标表已保存：{overview_path}")
-
-    print("\n" + "=" * 72)
-    print("全部对比完成。")
-    print("已输出：")
-    print("  - forward_model_metrics.csv")
-    print("  - forward_model_predictions.csv")
-    print("  - inverse_model_metrics.csv")
-    print("  - inverse_model_predictions_all.csv")
-    print("  - inverse_model_predictions_main.csv")
-    print("  - all_model_metrics_overview.csv")
-    print("=" * 72)
+    print("\n全部结果已统一输出到：")
+    print(run_dir)
 
 
 if __name__ == "__main__":

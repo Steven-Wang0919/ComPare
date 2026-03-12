@@ -1,41 +1,39 @@
 # -*- coding: utf-8 -*-
 """
-训练 & 评估 KAN
+train_kan.py
 
-改进版功能：
-1. 统一使用 train/val/test 三分数据
-2. 统一使用 0–1 归一化
-3. 在验证集上调参：hidden_dim, lr, weight_decay
-4. 统一随机种子，增强结果可复现性
-5. 训练完成后保存 forward 部署工件：
-   - path/kan_forward.pth
-   - path/kan_forward_meta.json
+正向 KAN：
+- 默认不再写仓库根目录 results_kan.csv
+- 默认不再写顶层 path/
+- 独立运行时输出到 runs/<timestamp>_train_kan/
 """
 
 import json
 import os
 import random
+
 import numpy as np
 import pandas as pd
-from sklearn.metrics import r2_score
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from sklearn.metrics import r2_score
 
 from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
+
+
+EPS = 1e-8
 
 
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
     if torch.cuda.is_available():
         torch.cuda.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
-
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.deterministic = True
         torch.backends.cudnn.benchmark = False
@@ -54,7 +52,7 @@ class KANLayer(nn.Module):
         base_activation=torch.nn.SiLU,
         grid_range=(-1.0, 1.0),
     ):
-        super(KANLayer, self).__init__()
+        super().__init__()
         self.in_features = in_features
         self.out_features = out_features
         self.grid_size = grid_size
@@ -72,16 +70,13 @@ class KANLayer(nn.Module):
         self.spline_weight = nn.Parameter(
             torch.Tensor(out_features, in_features, grid_size + spline_order)
         )
-
         self.scale_noise = scale_noise
         self.scale_base = scale_base
         self.scale_spline = scale_spline
-
         self.reset_parameters()
 
     def reset_parameters(self):
         nn.init.kaiming_uniform_(self.base_weight, a=np.sqrt(5) * self.scale_base)
-
         with torch.no_grad():
             noise = (
                 torch.rand(self.grid_size + 1, self.in_features, self.out_features) - 0.5
@@ -94,7 +89,7 @@ class KANLayer(nn.Module):
     def b_splines(self, x: torch.Tensor):
         assert x.dim() == 2 and x.size(1) == self.in_features
 
-        grid: torch.Tensor = self.input_grid
+        grid = self.input_grid
         h = (grid[:, -1:] - grid[:, 0:1]) / self.grid_size
         device = grid.device
 
@@ -109,17 +104,16 @@ class KANLayer(nn.Module):
         right_pad = grid[:, -1:] + arange_right * h
 
         grid = torch.cat([left_pad, grid, right_pad], dim=1)
-
         x = x.unsqueeze(-1)
         grid = grid.unsqueeze(0)
 
         bases = ((x >= grid[:, :, :-1]) & (x < grid[:, :, 1:])).to(x.dtype)
 
         for k in range(1, self.spline_order + 1):
-            denom1 = grid[:, :, k:-1] - grid[:, :, : -(k + 1)]
-            denom2 = grid[:, :, k + 1 :] - grid[:, :, 1:-k]
-            term1 = (x - grid[:, :, : -(k + 1)]) / (denom1 + 1e-12) * bases[:, :, :-1]
-            term2 = (grid[:, :, k + 1 :] - x) / (denom2 + 1e-12) * bases[:, :, 1:]
+            denom1 = grid[:, :, k:-1] - grid[:, :, :-(k + 1)]
+            denom2 = grid[:, :, k + 1:] - grid[:, :, 1:-k]
+            term1 = (x - grid[:, :, :-(k + 1)]) / (denom1 + 1e-12) * bases[:, :, :-1]
+            term2 = (grid[:, :, k + 1:] - x) / (denom2 + 1e-12) * bases[:, :, 1:]
             bases = term1 + term2
 
         return bases.contiguous()
@@ -128,8 +122,7 @@ class KANLayer(nn.Module):
         A = self.b_splines(x.transpose(0, 1)).transpose(0, 1)
         B = y.transpose(0, 1)
         solution = torch.linalg.lstsq(A, B).solution
-        result = solution.permute(2, 0, 1)
-        return result.contiguous()
+        return solution.permute(2, 0, 1).contiguous()
 
     def forward(self, x: torch.Tensor):
         base_out = F.linear(self.base_activation(x), self.base_weight)
@@ -141,8 +134,8 @@ class KANLayer(nn.Module):
 
 
 class FertilizerKAN(nn.Module):
-    def __init__(self, input_dim=2, hidden_dim=8, output_dim=1):
-        super(FertilizerKAN, self).__init__()
+    def __init__(self, input_dim=2, hidden_dim=16, output_dim=1):
+        super().__init__()
         self.kan1 = KANLayer(input_dim, hidden_dim, grid_size=10)
         self.kan2 = KANLayer(hidden_dim, output_dim, grid_size=10)
 
@@ -150,14 +143,6 @@ class FertilizerKAN(nn.Module):
         x = self.kan1(x)
         x = self.kan2(x)
         return x
-
-
-def _ensure_save_dir(save_dir):
-    os.makedirs(save_dir, exist_ok=True)
-
-
-def _to_list(arr):
-    return np.asarray(arr).tolist()
 
 
 def save_forward_artifacts(
@@ -193,21 +178,20 @@ def save_forward_artifacts(
         "weight_path": model_path.replace("\\", "/"),
         "data_path": data_path,
         "seed": int(seed),
-        "normalization_scope": {"forward": "train"},
         "hyperparameters": {
             "hidden_dim": int(hidden_dim),
             "lr": float(lr),
             "weight_decay": float(weight_decay),
             "epochs": int(epochs),
             "search_epochs": int(search_epochs),
-            "lr_gamma": float(gamma),
+            "gamma": float(gamma),
         },
         "validation_result": {
-            "best_val_r2": float(best_val_r2)
+            "best_val_r2": float(best_val_r2),
         },
         "normalization_params": {
-            "X_min": _to_list(x_min),
-            "X_max": _to_list(x_max),
+            "X_min": np.asarray(x_min).tolist(),
+            "X_max": np.asarray(x_max).tolist(),
             "y_min": float(np.asarray(y_min).reshape(-1)[0]),
             "y_max": float(np.asarray(y_max).reshape(-1)[0]),
         },
@@ -223,14 +207,11 @@ def save_forward_artifacts(
             "train_size": int(len(idx_tr)),
             "val_size": int(len(idx_val)),
             "test_size": int(len(idx_te)),
-        }
+        },
     }
 
     with open(meta_path, "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
-
-    print(f"正向模型权重已保存：{model_path}")
-    print(f"正向模型元数据已保存：{meta_path}")
 
 
 def train_and_eval_kan(
@@ -241,10 +222,10 @@ def train_and_eval_kan(
     epochs=600,
     search_epochs=300,
     gamma=0.99,
-    save_csv_path="results_kan.csv",
+    save_csv_path=None,
     seed=42,
-    save_artifacts=True,
-    artifact_dir="path",
+    save_artifacts=False,
+    artifact_dir=None,
     weight_filename="kan_forward.pth",
     meta_filename="kan_forward_meta.json",
 ):
@@ -263,8 +244,8 @@ def train_and_eval_kan(
         weight_decay_candidates = [1e-4, 1e-5]
 
     X, y = load_data(data_path)
-
     idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+
     X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
     X_val_raw, y_val_raw = X[idx_val], y[idx_val]
     X_test_raw, y_test_raw = X[idx_te], y[idx_te]
@@ -273,23 +254,23 @@ def train_and_eval_kan(
     X_max = X_train_raw.max(axis=0, keepdims=True)
 
     def norm_x(x):
-        return (x - X_min) / (X_max - X_min + 1e-8)
+        return (x - X_min) / (X_max - X_min + EPS)
 
-    X_train_kan_np = norm_x(X_train_raw)
-    X_val_kan_np = norm_x(X_val_raw)
-    X_test_kan_np = norm_x(X_test_raw)
+    X_train_np = norm_x(X_train_raw)
+    X_val_np = norm_x(X_val_raw)
+    X_test_np = norm_x(X_test_raw)
 
     y_min = y_train_raw.min(keepdims=True)
     y_max = y_train_raw.max(keepdims=True)
-    y_train_kan_np = (y_train_raw - y_min) / (y_max - y_min + 1e-8)
-    y_val_kan_np = (y_val_raw - y_min) / (y_max - y_min + 1e-8)
 
-    X_train_kan = torch.tensor(X_train_kan_np, dtype=torch.float32).to(device)
-    X_val_kan = torch.tensor(X_val_kan_np, dtype=torch.float32).to(device)
-    X_test_kan = torch.tensor(X_test_kan_np, dtype=torch.float32).to(device)
+    y_train_np = (y_train_raw - y_min) / (y_max - y_min + EPS)
+    y_val_np = (y_val_raw - y_min) / (y_max - y_min + EPS)
 
-    y_train_kan = torch.tensor(y_train_kan_np, dtype=torch.float32).view(-1, 1).to(device)
-    y_val_kan = torch.tensor(y_val_kan_np, dtype=torch.float32).view(-1, 1).to(device)
+    X_train_t = torch.tensor(X_train_np, dtype=torch.float32).to(device)
+    X_val_t = torch.tensor(X_val_np, dtype=torch.float32).to(device)
+    X_test_t = torch.tensor(X_test_np, dtype=torch.float32).to(device)
+    y_train_t = torch.tensor(y_train_np, dtype=torch.float32).view(-1, 1).to(device)
+    y_val_t = torch.tensor(y_val_np, dtype=torch.float32).view(-1, 1).to(device)
 
     criterion = nn.MSELoss()
     best_r2_val = -np.inf
@@ -303,7 +284,7 @@ def train_and_eval_kan(
                 model = FertilizerKAN(
                     input_dim=2,
                     hidden_dim=hidden_dim,
-                    output_dim=1
+                    output_dim=1,
                 ).to(device)
 
                 optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
@@ -312,15 +293,15 @@ def train_and_eval_kan(
                 for _ in range(search_epochs):
                     model.train()
                     optimizer.zero_grad()
-                    pred_train_norm = model(X_train_kan)
-                    loss = criterion(pred_train_norm, y_train_kan)
+                    pred_train_norm = model(X_train_t)
+                    loss = criterion(pred_train_norm, y_train_t)
                     loss.backward()
                     optimizer.step()
                     scheduler.step()
 
                 model.eval()
                 with torch.no_grad():
-                    pred_val_norm = model(X_val_kan).cpu().numpy().reshape(-1)
+                    pred_val_norm = model(X_val_t).cpu().numpy().reshape(-1)
 
                 y_pred_val = pred_val_norm * (y_max - y_min) + y_min
                 r2_val = r2_score(y_val_raw, y_pred_val)
@@ -332,22 +313,21 @@ def train_and_eval_kan(
     if best_cfg is None:
         raise RuntimeError("KAN 超参数搜索失败，未找到有效配置。")
 
-    print(
-        f"KAN 最优超参数：hidden_dim={best_cfg[0]}, "
-        f"lr={best_cfg[1]}, weight_decay={best_cfg[2]}, "
-        f"val R²={best_r2_val:.6f}"
-    )
-
     hidden_dim_best, lr_best, wd_best = best_cfg
 
-    X_train_val_kan = torch.cat([X_train_kan, X_val_kan], dim=0)
-    y_train_val_kan = torch.cat([y_train_kan, y_val_kan], dim=0)
+    print(
+        f"KAN 最优超参数：hidden_dim={hidden_dim_best}, "
+        f"lr={lr_best}, weight_decay={wd_best}, val R²={best_r2_val:.6f}"
+    )
+
+    X_train_val_t = torch.cat([X_train_t, X_val_t], dim=0)
+    y_train_val_t = torch.cat([y_train_t, y_val_t], dim=0)
 
     set_seed(seed)
     model_final = FertilizerKAN(
         input_dim=2,
         hidden_dim=hidden_dim_best,
-        output_dim=1
+        output_dim=1,
     ).to(device)
 
     optimizer = optim.AdamW(model_final.parameters(), lr=lr_best, weight_decay=wd_best)
@@ -357,8 +337,8 @@ def train_and_eval_kan(
     for epoch in range(epochs):
         model_final.train()
         optimizer.zero_grad()
-        pred_train_norm = model_final(X_train_val_kan)
-        loss = criterion(pred_train_norm, y_train_val_kan)
+        pred_train_norm = model_final(X_train_val_t)
+        loss = criterion(pred_train_norm, y_train_val_t)
         loss.backward()
         optimizer.step()
         scheduler.step()
@@ -368,10 +348,9 @@ def train_and_eval_kan(
 
     model_final.eval()
     with torch.no_grad():
-        pred_test_norm = model_final(X_test_kan).cpu().numpy().reshape(-1)
+        pred_test_norm = model_final(X_test_t).cpu().numpy().reshape(-1)
 
     y_pred_kan = pred_test_norm * (y_max - y_min) + y_min
-
     kan_r2 = r2_score(y_test_raw, y_pred_kan)
     kan_are = average_relative_error(y_test_raw, y_pred_kan)
 
@@ -379,17 +358,20 @@ def train_and_eval_kan(
     print(f"R²  = {kan_r2:.6f}")
     print(f"ARE = {kan_are:.6f} %")
 
-    df_out = pd.DataFrame({
-        "true": y_test_raw,
-        "KAN_pred": y_pred_kan,
-    })
-    df_out.to_csv(save_csv_path, index=False, encoding="utf-8-sig")
-    print(f"\n预测文件已保存：{save_csv_path}")
+    if save_csv_path is not None:
+        df_out = pd.DataFrame({
+            "true": y_test_raw,
+            "KAN_pred": y_pred_kan,
+        })
+        save_dataframe(df_out, save_csv_path)
+        print(f"预测文件已保存：{save_csv_path}")
 
     model_path = None
     meta_path = None
     if save_artifacts:
-        _ensure_save_dir(artifact_dir)
+        if artifact_dir is None:
+            raise ValueError("save_artifacts=True 时必须提供 artifact_dir")
+        ensure_dir(artifact_dir)
         model_path = os.path.join(artifact_dir, weight_filename)
         meta_path = os.path.join(artifact_dir, meta_filename)
 
@@ -416,6 +398,7 @@ def train_and_eval_kan(
             idx_val=idx_val,
             idx_te=idx_te,
         )
+        print(f"KAN 工件已保存：{artifact_dir}")
 
     return {
         "r2": kan_r2,
@@ -431,5 +414,42 @@ def train_and_eval_kan(
     }
 
 
+def main():
+    run_dir = create_run_dir("train_kan")
+    output_csv = os.path.join(run_dir, "results_kan.csv")
+    artifact_dir = os.path.join(run_dir, "artifacts")
+
+    write_manifest(
+        run_dir,
+        script_name="train_kan.py",
+        data_path="data/dataset.xlsx",
+        seed=42,
+        params={
+            "hidden_dim_candidates": [4, 8, 16],
+            "lr_candidates": [0.01, 0.005],
+            "weight_decay_candidates": [1e-4, 1e-5],
+            "epochs": 600,
+            "search_epochs": 300,
+            "gamma": 0.99,
+        },
+    )
+
+    res = train_and_eval_kan(
+        save_csv_path=output_csv,
+        seed=42,
+        save_artifacts=True,
+        artifact_dir=artifact_dir,
+    )
+
+    outputs = [{"path": "results_kan.csv"}]
+    if res["artifact_model_path"] is not None:
+        outputs.append({"path": "artifacts/kan_forward.pth"})
+    if res["artifact_meta_path"] is not None:
+        outputs.append({"path": "artifacts/kan_forward_meta.json"})
+
+    append_manifest_outputs(run_dir, outputs)
+    print(f"\n本次运行目录：{run_dir}")
+
+
 if __name__ == "__main__":
-    train_and_eval_kan()
+    main()
