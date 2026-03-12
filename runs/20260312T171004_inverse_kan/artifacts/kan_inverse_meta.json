@@ -1,0 +1,47 @@
+{
+  "artifact_type": "inverse_model_bundle",
+  "model_name": "KAN",
+  "model_class": "InverseKANModel",
+  "architecture_repair": true,
+  "weight_path": "runs/20260312T171004_inverse_kan/artifacts/kan_inverse.pth",
+  "data_path": "data/dataset.xlsx",
+  "seed": 42,
+  "hyperparameters": {
+    "hidden_dim": 32,
+    "lr": 0.01,
+    "weight_decay": 1e-05,
+    "epochs": 1000
+  },
+  "validation_result": {
+    "best_val_r2": 0.9999756926737512
+  },
+  "normalization_params": {
+    "X_min": [
+      [
+        1144.270263671875,
+        20.0
+      ]
+    ],
+    "X_max": [
+      [
+        8121.93408203125,
+        50.0
+      ]
+    ],
+    "y_min": 20.0,
+    "y_max": 60.0
+  },
+  "training_domain": {
+    "target_mass_min": 1144.270263671875,
+    "target_mass_max": 8121.93408203125,
+    "opening_min": 20.0,
+    "opening_max": 50.0,
+    "speed_min": 20.0,
+    "speed_max": 60.0
+  },
+  "split_info": {
+    "train_size": 200,
+    "val_size": 43,
+    "test_size": 44
+  }
+}

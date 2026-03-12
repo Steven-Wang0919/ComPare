@@ -1,0 +1,11 @@
+{
+  "seed": 42,
+  "data_path": "data/dataset.xlsx",
+  "enable_range_warning": true,
+  "enable_output_clipping": true,
+  "prefer_saved_artifacts": true,
+  "strict_artifact_mode": true,
+  "forward_artifact_dir": "runs\\20260312T170936_train_kan\\artifacts",
+  "inverse_artifact_dir": "runs\\20260312T171004_inverse_kan\\artifacts",
+  "runs_root": "runs"
+}

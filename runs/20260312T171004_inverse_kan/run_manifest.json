@@ -1,0 +1,56 @@
+{
+  "script_name": "inverse_kan.py",
+  "timestamp": "20260312T171004",
+  "run_dir": "runs/20260312T171004_inverse_kan",
+  "data": {
+    "path": "data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "hidden_dim_candidates": [
+      8,
+      16,
+      32
+    ],
+    "lr_candidates": [
+      0.01,
+      0.005,
+      0.001
+    ],
+    "weight_decay_candidates": [
+      0.0,
+      1e-06,
+      1e-05,
+      0.0001
+    ],
+    "epochs": 1000
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "outputs": [
+    {
+      "path": "inverse_kan_predictions_all.csv"
+    },
+    {
+      "path": "inverse_kan_predictions_main.csv"
+    },
+    {
+      "path": "artifacts/kan_inverse.pth"
+    },
+    {
+      "path": "artifacts/kan_inverse_meta.json"
+    }
+  ],
+  "extra": {}
+}

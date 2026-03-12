@@ -1,0 +1,4 @@
+﻿Task,Model,DisplayName,ArchitectureNote,R2,ARE(%),Hyperparams
+forward,MLP,MLP,,0.9834162860565963,4.745113843381735,"hidden=(20, 20), alpha=1e-05"
+forward,GRNN,GRNN,,0.9944334282036346,2.792923563890828,sigma=0.1
+forward,KAN,KAN,forward spline/grid KAN,0.9999446868896484,0.25886866450309753,"hidden=16, lr=0.01, wd=0.0001"
