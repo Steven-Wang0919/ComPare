@@ -20,7 +20,12 @@ import torch.nn.functional as F
 import torch.optim as optim
 from sklearn.metrics import r2_score
 
-from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from common_utils import (
+    load_data,
+    get_train_val_test_indices,
+    average_relative_error,
+    validate_predefined_split_indices,
+)
 from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
 
 
@@ -228,6 +233,7 @@ def train_and_eval_kan(
     artifact_dir=None,
     weight_filename="kan_forward.pth",
     meta_filename="kan_forward_meta.json",
+    split_indices=None,
 ):
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -244,7 +250,12 @@ def train_and_eval_kan(
         weight_decay_candidates = [1e-4, 1e-5]
 
     X, y = load_data(data_path)
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+    if split_indices is None:
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+    else:
+        idx_tr, idx_val, idx_te = validate_predefined_split_indices(
+            len(X), split_indices[0], split_indices[1], split_indices[2]
+        )
 
     X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
     X_val_raw, y_val_raw = X[idx_val], y[idx_val]
@@ -408,6 +419,7 @@ def train_and_eval_kan(
         "best_weight_decay": wd_best,
         "y_true": y_test_raw,
         "y_pred": y_pred_kan,
+        "x_test_raw": X_test_raw,
         "seed": seed,
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,

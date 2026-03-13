@@ -15,7 +15,12 @@ import pandas as pd
 from sklearn.metrics import r2_score
 from sklearn.neural_network import MLPRegressor
 
-from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from common_utils import (
+    load_data,
+    get_train_val_test_indices,
+    average_relative_error,
+    validate_predefined_split_indices,
+)
 from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
 
 
@@ -29,6 +34,7 @@ def train_and_eval_mlp(
     max_iter=5000,
     random_state=0,
     save_csv_path=None,
+    split_indices=None,
 ):
     if hidden_layer_candidates is None:
         hidden_layer_candidates = [(10,), (20,), (50,), (20, 20)]
@@ -38,7 +44,12 @@ def train_and_eval_mlp(
     print("\n=== 训练 MLP（统一 y 归一化口径） ===")
 
     X, y = load_data(data_path)
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+    if split_indices is None:
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+    else:
+        idx_tr, idx_val, idx_te = validate_predefined_split_indices(
+            len(X), split_indices[0], split_indices[1], split_indices[2]
+        )
 
     X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
     X_val_raw, y_val_raw = X[idx_val], y[idx_val]
@@ -132,6 +143,7 @@ def train_and_eval_mlp(
         "best_alpha": best_alpha,
         "y_true": y_test_raw,
         "y_pred": y_pred_test,
+        "x_test_raw": X_test_raw,
         "norm_stats": {
             "X_min": X_min,
             "X_max": X_max,
