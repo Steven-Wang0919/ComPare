@@ -3,7 +3,7 @@
 补充“插值 vs 外推”验证：
 1) 随机联合分层切分（网格内插值）
 2) 留一开度层外推（7 折）
-3) 留一速度段外推
+3) 留一速度段外推（3 折：低速 / 中速 / 高速）
 
 仅比较三种数据驱动模型：
 - MLP
@@ -16,6 +16,7 @@
 - protocol_summary.csv
 - protocol_family_summary.csv
 - opening_cv_summary.csv
+- speed_cv_summary.csv
 """
 
 import os
@@ -129,14 +130,21 @@ def _build_all_protocols(X, y, seed):
             holdout_opening=op,
         )
 
-    # 3) 留一速度段外推：示例保留 56~60
-    protocols["leave_speed_56_60_out"] = build_protocol_splits(
-        X, y,
-        protocol="leave_speed_block_out",
-        random_state=seed,
-        holdout_speed_min=56,
-        holdout_speed_max=60,
-    )
+    # 3) 留一速度段外推：补成 3 折
+    speed_blocks = [
+        ("leave_speed_20_24_out", 20, 24),
+        ("leave_speed_38_42_out", 38, 42),
+        ("leave_speed_56_60_out", 56, 60),
+    ]
+
+    for protocol_name, smin, smax in speed_blocks:
+        protocols[protocol_name] = build_protocol_splits(
+            X, y,
+            protocol="leave_speed_block_out",
+            random_state=seed,
+            holdout_speed_min=smin,
+            holdout_speed_max=smax,
+        )
 
     return protocols
 
@@ -208,6 +216,30 @@ def _make_opening_cv_summary(df_metrics):
     return agg
 
 
+def _make_speed_cv_summary(df_metrics):
+    df = df_metrics[df_metrics["protocol"].str.startswith("leave_speed_")].copy()
+    if len(df) == 0:
+        return pd.DataFrame()
+
+    agg = (
+        df.groupby("model", as_index=False)
+        .agg(
+            r2_mean=("r2", "mean"),
+            r2_std=("r2", "std"),
+            r2_min=("r2", "min"),
+            r2_max=("r2", "max"),
+            are_mean=("are", "mean"),
+            are_std=("are", "std"),
+            are_min=("are", "min"),
+            are_max=("are", "max"),
+            folds=("protocol", "count"),
+        )
+        .sort_values("r2_mean", ascending=False)
+        .reset_index(drop=True)
+    )
+    return agg
+
+
 def main():
     data_path = "data/dataset.xlsx"
     seed = 42
@@ -246,12 +278,14 @@ def main():
     df_protocol_summary = _make_protocol_summary(df_metrics)
     df_family_summary = _make_protocol_family_summary(df_metrics)
     df_opening_cv_summary = _make_opening_cv_summary(df_metrics)
+    df_speed_cv_summary = _make_speed_cv_summary(df_metrics)
 
     save_dataframe(df_metrics, os.path.join(run_dir, "protocol_metrics.csv"))
     save_dataframe(df_preds, os.path.join(run_dir, "protocol_predictions.csv"))
     save_dataframe(df_protocol_summary, os.path.join(run_dir, "protocol_summary.csv"))
     save_dataframe(df_family_summary, os.path.join(run_dir, "protocol_family_summary.csv"))
     save_dataframe(df_opening_cv_summary, os.path.join(run_dir, "opening_cv_summary.csv"))
+    save_dataframe(df_speed_cv_summary, os.path.join(run_dir, "speed_cv_summary.csv"))
 
     append_manifest_outputs(
         run_dir,
@@ -261,6 +295,7 @@ def main():
             {"path": "protocol_summary.csv"},
             {"path": "protocol_family_summary.csv"},
             {"path": "opening_cv_summary.csv"},
+            {"path": "speed_cv_summary.csv"},
         ],
     )
 
