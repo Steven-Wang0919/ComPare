@@ -1,0 +1,4 @@
+﻿Task,Model,DisplayName,ArchitectureNote,R2_main,ARE_main(%),n_main,main_ratio,R2_all,ARE_all(%),n_all,Hyperparams
+inverse_opening_holdout,inverse_MLP,inverse_MLP,test = all 20/35/50 mm openings,0.9793518471754755,2.8691342060447913,76,0.6178861788617886,0.9779889678356591,3.5701054761928517,123,"hidden=(20, 20), alpha=0.001"
+inverse_opening_holdout,inverse_GRNN,inverse_GRNN,test = all 20/35/50 mm openings,0.8241693617902026,8.498829938996435,76,0.6178861788617886,0.8140351526763442,10.824756436778326,123,sigma=0.1
+inverse_opening_holdout,inverse_KAN,inverse_KAN,repaired spline/grid KAN; test = all 20/35/50 mm openings,0.9003511814435594,5.909250733126628,76,0.6178861788617886,0.9181658023506419,6.04193504214828,123,"hidden=32, lr=0.001, wd=0"

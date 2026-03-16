@@ -1,0 +1,54 @@
+{
+  "artifact_type": "forward_model_bundle",
+  "model_name": "KAN",
+  "model_class": "FertilizerKAN",
+  "weight_path": "runs/20260315T163020_train_kan/artifacts/kan_forward.pth",
+  "data_path": "data/dataset.xlsx",
+  "seed": 42,
+  "hyperparameters": {
+    "hidden_dim": 8,
+    "lr": 0.01,
+    "weight_decay": 0.0001,
+    "epochs": 600,
+    "search_epochs": 300,
+    "gamma": 0.99,
+    "grid_size": 10,
+    "spline_order": 3,
+    "grid_range": [
+      0.0,
+      1.0
+    ]
+  },
+  "validation_result": {
+    "best_val_r2": 0.9999129772186279
+  },
+  "normalization_params": {
+    "X_min": [
+      [
+        20.0,
+        20.0
+      ]
+    ],
+    "X_max": [
+      [
+        50.0,
+        60.0
+      ]
+    ],
+    "y_min": 1144.270263671875,
+    "y_max": 8121.93408203125
+  },
+  "training_domain": {
+    "opening_min": 20.0,
+    "opening_max": 50.0,
+    "speed_min": 20.0,
+    "speed_max": 60.0,
+    "mass_min": 1144.270263671875,
+    "mass_max": 8121.93408203125
+  },
+  "split_info": {
+    "train_size": 200,
+    "val_size": 43,
+    "test_size": 44
+  }
+}
