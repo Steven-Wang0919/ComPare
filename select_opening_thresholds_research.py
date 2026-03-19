@@ -1,21 +1,23 @@
 # -*- coding: utf-8 -*-
 """
-单文件科研实验脚本：自动搜索 low / mid / high 三档开度阈值
+学术增强版单文件科研实验脚本：自动搜索 low / mid / high 三档开度阈值
+
+增强点：
+1. GMM（Gaussian Mixture Model）替代 1D KMeans，得到 soft boundary；
+2. PCHIP（保形分段三次 Hermite 插值）替代线性插值；
+3. 熵权法替代固定权重，分别用于：
+   - 单候选的角色评分（fit / coverage / distance / order）
+   - 三元组总评分（low / mid / high / spacing / balance / distance_bonus）
 
 使用方式（PyCharm 直接点击运行）：
 1. 修改下方 EXPERIMENT_CONFIG 中的数据路径与输出目录；
 2. 点击 Run；
 3. 程序会在终端打印最优结果，并将完整结果保存到 output_dir。
-
-输出文件：
-- opening_models.csv         每个训练开度对应的线性拟合参数
-- candidate_scores.csv       每个候选整数开度在 low/mid/high 三种角色下的评分
-- triplet_ranking.csv        所有 low<mid<high 三元组的总排序
-- summary.json               最终实验摘要
 """
 
 from __future__ import annotations
-
+import os
+os.environ["OMP_NUM_THREADS"] = '1'
 import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -23,19 +25,19 @@ from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+from scipy.interpolate import PchipInterpolator
+from sklearn.mixture import GaussianMixture
 
 
-# ============================================================================
-# 实验配置：在 PyCharm 里直接修改这里即可
-# ============================================================================
 EXPERIMENT_CONFIG = {
-    "data_path": "data/dataset.xlsx",          # Excel 数据路径
-    "output_dir": "runs/opening_thresholds",  # 结果保存目录
-    "reference_speed": None,                    # 参考转速；None=自动取 speed 中位数
-    "fixed_min_distance": None,                 # 固定插值候选开度与训练开度的最小距离；None=自动搜索
-    "include_training_openings": True,          # True=20/25/30/... 这些训练开度也参与候选评估
-    "top_k": 20,                                # summary.json 中保留前 k 个三元组
+    "data_path": "data/dataset.xlsx",
+    "output_dir": "runs/opening_thresholds_academic",
+    "reference_speed": None,
+    "fixed_min_distance": None,
+    "include_training_openings": True,
+    "top_k": 20,
     "random_seed": 42,
+    "gmm_reg_covar": 1e-6,
 }
 
 
@@ -51,36 +53,22 @@ class SearchConfig:
     include_training_openings: bool = True
     top_k: int = 20
     random_seed: int = 42
+    gmm_reg_covar: float = 1e-6
 
-    n_clusters: int = 3
-    kmeans_restarts: int = 16
-    kmeans_max_iter: int = 200
-
-    # 单候选评分权重
-    w_fit: float = 0.50
-    w_coverage: float = 0.25
-    w_distance: float = 0.15
-    w_order: float = 0.10
-
-    # 三元组附加评分
-    w_spacing: float = 0.08
-    w_balance: float = 0.04
-    w_distance_bonus: float = 0.03
+    n_components: int = 3
+    eps: float = 1e-12
 
     def validate(self) -> None:
-        if self.n_clusters != 3:
+        if self.n_components != 3:
             raise ValueError("当前脚本固定为 3 类质量区间（low/mid/high）。")
         if self.top_k <= 0:
             raise ValueError("top_k 必须大于 0。")
-        if self.kmeans_restarts <= 0 or self.kmeans_max_iter <= 0:
-            raise ValueError("KMeans 参数必须为正数。")
         if self.fixed_min_distance is not None and self.fixed_min_distance < 0:
             raise ValueError("fixed_min_distance 不能小于 0。")
+        if self.gmm_reg_covar <= 0:
+            raise ValueError("gmm_reg_covar 必须为正数。")
 
 
-# ============================================================================
-# 数据与拟合
-# ============================================================================
 def load_data(path: str | Path, cfg: SearchConfig) -> pd.DataFrame:
     path = Path(path)
     if not path.exists():
@@ -95,7 +83,6 @@ def load_data(path: str | Path, cfg: SearchConfig) -> pd.DataFrame:
     df = df[[cfg.opening_col, cfg.speed_col, cfg.mass_col]].copy()
     df.columns = ["opening", "speed", "mass"]
     df = df.dropna().reset_index(drop=True)
-
     if df.empty:
         raise ValueError("数据为空，无法执行搜索。")
     return df
@@ -106,7 +93,6 @@ def fit_opening_models(df: pd.DataFrame) -> pd.DataFrame:
     for opening, sub in df.groupby("opening"):
         x = sub["speed"].to_numpy(dtype=float)
         y = sub["mass"].to_numpy(dtype=float)
-
         if len(np.unique(x)) < 2:
             raise ValueError(f"开度 {opening} 的转速取值不足，无法拟合线性模型。")
 
@@ -133,103 +119,129 @@ def fit_opening_models(df: pd.DataFrame) -> pd.DataFrame:
     return models
 
 
+class ParamInterpolator:
+    def __init__(self, models: pd.DataFrame):
+        xp = models["opening"].to_numpy(dtype=float)
+        self.x_min = float(xp.min())
+        self.x_max = float(xp.max())
+        self.slope_interp = PchipInterpolator(xp, models["slope"].to_numpy(dtype=float), extrapolate=False)
+        self.intercept_interp = PchipInterpolator(xp, models["intercept"].to_numpy(dtype=float), extrapolate=False)
+
+    def params(self, opening: float) -> Tuple[float, float]:
+        if opening < self.x_min or opening > self.x_max:
+            raise ValueError(f"开度 {opening} 超出训练开度范围，无法插值。")
+        slope = float(self.slope_interp(opening))
+        intercept = float(self.intercept_interp(opening))
+        return slope, intercept
+
+    def predict(self, opening: float, speed: float) -> float:
+        slope, intercept = self.params(opening)
+        return float(slope * speed + intercept)
+
+
 def get_reference_speed(df: pd.DataFrame, cfg: SearchConfig) -> float:
     return float(cfg.reference_speed) if cfg.reference_speed is not None else float(df["speed"].median())
 
 
-def interpolate_params(opening: float, models: pd.DataFrame) -> Tuple[float, float]:
-    xp = models["opening"].to_numpy(dtype=float)
-    if opening < xp.min() or opening > xp.max():
-        raise ValueError(f"开度 {opening} 超出训练开度范围，无法插值。")
-    slope = float(np.interp(opening, xp, models["slope"].to_numpy(dtype=float)))
-    intercept = float(np.interp(opening, xp, models["intercept"].to_numpy(dtype=float)))
-    return slope, intercept
+def normal_pdf(x: np.ndarray, mean: float, var: float) -> np.ndarray:
+    var = max(var, 1e-12)
+    coef = 1.0 / np.sqrt(2.0 * np.pi * var)
+    return coef * np.exp(-0.5 * ((x - mean) ** 2) / var)
 
 
-def predict_mass(opening: float, speed: float, models: pd.DataFrame) -> float:
-    slope, intercept = interpolate_params(opening, models)
-    return float(slope * speed + intercept)
-
-
-# ============================================================================
-# 自动学习质量阈值（1D KMeans）
-# ============================================================================
-def kmeans_1d(values: np.ndarray, n_clusters: int, restarts: int, max_iter: int, seed: int) -> Tuple[np.ndarray, np.ndarray, float]:
-    values = np.asarray(values, dtype=float).reshape(-1)
-    if len(values) < n_clusters:
-        raise ValueError("样本量不足，无法进行 1D KMeans。")
-
-    rng = np.random.default_rng(seed)
-    init_percentiles = np.linspace(0, 100, n_clusters + 2)[1:-1]
-    best_centers, best_labels, best_inertia = None, None, np.inf
-
-    for restart in range(restarts):
-        if restart == 0:
-            centers = np.percentile(values, init_percentiles).astype(float)
-        else:
-            qs = np.sort(rng.uniform(0, 100, size=n_clusters))
-            centers = np.percentile(values, qs).astype(float)
-
-        for _ in range(max_iter):
-            distances = np.abs(values[:, None] - centers[None, :])
-            labels = np.argmin(distances, axis=1)
-            new_centers = centers.copy()
-            for k in range(n_clusters):
-                cluster_values = values[labels == k]
-                if len(cluster_values) > 0:
-                    new_centers[k] = float(cluster_values.mean())
-            if np.allclose(new_centers, centers, atol=1e-8, rtol=0.0):
-                centers = new_centers
-                break
-            centers = new_centers
-
-        distances = np.abs(values[:, None] - centers[None, :])
-        labels = np.argmin(distances, axis=1)
-        inertia = float(np.sum((values - centers[labels]) ** 2))
-        if inertia < best_inertia:
-            best_centers = centers.copy()
-            best_labels = labels.copy()
-            best_inertia = inertia
-
-    assert best_centers is not None and best_labels is not None
-    order = np.argsort(best_centers)
-    centers_sorted = best_centers[order]
-    remap = {old: new for new, old in enumerate(order)}
-    labels_sorted = np.array([remap[int(label)] for label in best_labels], dtype=int)
-    return centers_sorted, labels_sorted, best_inertia
+def find_gmm_boundary(gmm: GaussianMixture, mean_a: float, mean_b: float) -> float:
+    means = gmm.means_.reshape(-1)
+    variances = gmm.covariances_.reshape(-1)
+    weights = gmm.weights_.reshape(-1)
+    idx_a = int(np.argmin(np.abs(means - mean_a)))
+    idx_b = int(np.argmin(np.abs(means - mean_b)))
+    left, right = sorted([mean_a, mean_b])
+    grid = np.linspace(left, right, 2000)
+    pa = weights[idx_a] * normal_pdf(grid, means[idx_a], variances[idx_a])
+    pb = weights[idx_b] * normal_pdf(grid, means[idx_b], variances[idx_b])
+    diff = pa - pb
+    change_idx = np.where(np.sign(diff[:-1]) != np.sign(diff[1:]))[0]
+    if len(change_idx) == 0:
+        return float(0.5 * (mean_a + mean_b))
+    i = int(change_idx[0])
+    x0, x1 = float(grid[i]), float(grid[i + 1])
+    y0, y1 = float(diff[i]), float(diff[i + 1])
+    if abs(y1 - y0) < 1e-12:
+        return float(0.5 * (x0 + x1))
+    return float(x0 - y0 * (x1 - x0) / (y1 - y0))
 
 
 def learn_mass_thresholds(df: pd.DataFrame, cfg: SearchConfig) -> Dict[str, Any]:
-    masses = df["mass"].to_numpy(dtype=float)
-    centers, labels, inertia = kmeans_1d(
-        masses,
-        n_clusters=cfg.n_clusters,
-        restarts=cfg.kmeans_restarts,
-        max_iter=cfg.kmeans_max_iter,
-        seed=cfg.random_seed,
+    masses = df["mass"].to_numpy(dtype=float).reshape(-1, 1)
+    if len(masses) < cfg.n_components:
+        raise ValueError("样本量不足，无法进行 GMM 分档。")
+
+    gmm = GaussianMixture(
+        n_components=cfg.n_components,
+        covariance_type="full",
+        reg_covar=cfg.gmm_reg_covar,
+        random_state=cfg.random_seed,
+        n_init=10,
+        max_iter=500,
     )
+    gmm.fit(masses)
 
-    t1 = float(0.5 * (centers[0] + centers[1]))
-    t2 = float(0.5 * (centers[1] + centers[2]))
+    raw_means = gmm.means_.reshape(-1)
+    order = np.argsort(raw_means)
+    means = raw_means[order]
+    variances = gmm.covariances_.reshape(-1)[order]
+    weights = gmm.weights_.reshape(-1)[order]
 
+    t1 = find_gmm_boundary(gmm, float(means[0]), float(means[1]))
+    t2 = find_gmm_boundary(gmm, float(means[1]), float(means[2]))
+
+    responsibilities = gmm.predict_proba(masses)[:, order]
+    labels = np.argmax(responsibilities, axis=1)
     cluster_stats = []
+    mass_values = masses.reshape(-1)
     for k in range(3):
-        vals = masses[labels == k]
+        vals = mass_values[labels == k]
         cluster_stats.append({
-            "cluster": int(k),
-            "center": float(centers[k]),
+            "component": int(k),
+            "mean": float(means[k]),
+            "variance": float(variances[k]),
+            "weight": float(weights[k]),
             "count": int(len(vals)),
-            "mass_min": float(vals.min()),
-            "mass_max": float(vals.max()),
+            "mass_min": float(vals.min()) if len(vals) else np.nan,
+            "mass_max": float(vals.max()) if len(vals) else np.nan,
         })
 
     return {
-        "low_mid_threshold": t1,
-        "mid_high_threshold": t2,
-        "cluster_centers": centers.tolist(),
+        "low_mid_threshold": float(t1),
+        "mid_high_threshold": float(t2),
+        "component_means": means.tolist(),
+        "component_variances": variances.tolist(),
+        "component_weights": weights.tolist(),
         "cluster_stats": cluster_stats,
-        "kmeans_inertia": float(inertia),
+        "gmm_lower_bound": float(gmm.lower_bound_),
     }
+
+
+class GMMScorer:
+    def __init__(self, thresholds: Dict[str, Any]):
+        self.means = np.asarray(thresholds["component_means"], dtype=float)
+        self.vars = np.asarray(thresholds["component_variances"], dtype=float)
+        self.weights = np.asarray(thresholds["component_weights"], dtype=float)
+        self.t1 = float(thresholds["low_mid_threshold"])
+        self.t2 = float(thresholds["mid_high_threshold"])
+        self.roles = ["low", "mid", "high"]
+
+    def posterior(self, value: float) -> Dict[str, float]:
+        x = np.array([float(value)], dtype=float)
+        comps = self.weights * np.array([
+            normal_pdf(x, self.means[i], self.vars[i])[0] for i in range(3)
+        ])
+        denom = float(np.sum(comps))
+        if denom <= 1e-12:
+            probs = np.ones(3, dtype=float) / 3.0
+        else:
+            probs = comps / denom
+        return {role: float(probs[i]) for i, role in enumerate(self.roles)}
 
 
 def build_mass_zones(df: pd.DataFrame, thresholds: Dict[str, Any]) -> Dict[str, Tuple[float, float]]:
@@ -244,15 +256,7 @@ def build_mass_zones(df: pd.DataFrame, thresholds: Dict[str, Any]) -> Dict[str, 
     }
 
 
-# ============================================================================
-# 候选开度与评分
-# ============================================================================
-def generate_candidates(
-    df: pd.DataFrame,
-    min_distance: int,
-    internal_only: bool,
-    include_training_openings: bool = True,
-) -> List[int]:
+def generate_candidates(df: pd.DataFrame, min_distance: int, internal_only: bool, include_training_openings: bool = True) -> List[int]:
     train_openings = np.sort(df["opening"].unique().astype(float))
     lo, hi = int(train_openings.min()), int(train_openings.max())
     search_range = range(lo + 1, hi) if internal_only else range(lo, hi + 1)
@@ -304,18 +308,10 @@ def overlap_ratio(interval_a: Tuple[float, float], interval_b: Tuple[float, floa
     return float(overlap / denom)
 
 
-def zone_closeness(value: float, zone: Tuple[float, float]) -> float:
-    z0, z1 = zone
-    center = 0.5 * (z0 + z1)
-    half_width = max(1e-9, 0.5 * (z1 - z0))
-    return float(max(0.0, min(1.0, 1.0 - abs(value - center) / half_width)))
-
-
 def order_score(value: float, role: str, thresholds: Dict[str, Any]) -> float:
     t1 = float(thresholds["low_mid_threshold"])
     t2 = float(thresholds["mid_high_threshold"])
     margin = max(1.0, t2 - t1)
-
     if role == "low":
         return float(max(0.0, min(1.0, (t1 - value) / margin + 0.5)))
     if role == "mid":
@@ -325,13 +321,42 @@ def order_score(value: float, role: str, thresholds: Dict[str, Any]) -> float:
     return float(max(0.0, min(1.0, (value - t2) / margin + 0.5)))
 
 
+def normalize_benefit_columns(df: pd.DataFrame, columns: List[str], eps: float = 1e-12) -> pd.DataFrame:
+    out = df.copy()
+    for col in columns:
+        vals = out[col].to_numpy(dtype=float)
+        vmin, vmax = float(np.min(vals)), float(np.max(vals))
+        if abs(vmax - vmin) <= eps:
+            out[col] = 1.0
+        else:
+            out[col] = (vals - vmin) / (vmax - vmin) + eps
+    return out
+
+
+def compute_entropy_weights(df: pd.DataFrame, columns: List[str], eps: float = 1e-12) -> Dict[str, float]:
+    norm_df = normalize_benefit_columns(df[columns], columns, eps=eps)
+    X = norm_df[columns].to_numpy(dtype=float)
+    P = X / np.clip(X.sum(axis=0, keepdims=True), eps, None)
+    n = X.shape[0]
+    if n <= 1:
+        return {col: 1.0 / len(columns) for col in columns}
+    k = 1.0 / np.log(n)
+    entropy = -k * np.sum(P * np.log(np.clip(P, eps, None)), axis=0)
+    divergence = 1.0 - entropy
+    if float(np.sum(divergence)) <= eps:
+        weights = np.ones(len(columns), dtype=float) / len(columns)
+    else:
+        weights = divergence / np.sum(divergence)
+    return {col: float(weights[i]) for i, col in enumerate(columns)}
+
+
 def score_candidates(
     df: pd.DataFrame,
-    models: pd.DataFrame,
+    interpolator: ParamInterpolator,
     thresholds: Dict[str, Any],
     min_distance: int,
     cfg: SearchConfig,
-) -> pd.DataFrame:
+) -> Tuple[pd.DataFrame, Dict[str, Dict[str, float]]]:
     train_openings = np.sort(df["opening"].unique().astype(float))
     candidates = generate_candidates(df, min_distance, cfg.require_internal_range, cfg.include_training_openings)
     if len(candidates) < 3:
@@ -341,38 +366,21 @@ def score_candidates(
     speed_min = float(df["speed"].min())
     speed_max = float(df["speed"].max())
     zones = build_mass_zones(df, thresholds)
+    scorer = GMMScorer(thresholds)
     max_spacing = max(1.0, float(np.max(np.diff(train_openings)))) if len(train_openings) >= 2 else 1.0
 
     rows: List[Dict[str, Any]] = []
     for opening in candidates:
-        est_ref = predict_mass(opening, ref_speed, models)
-        est_min = predict_mass(opening, speed_min, models)
-        est_max = predict_mass(opening, speed_max, models)
+        est_ref = interpolator.predict(opening, ref_speed)
+        est_min = interpolator.predict(opening, speed_min)
+        est_max = interpolator.predict(opening, speed_max)
         est_interval = (min(est_min, est_max), max(est_min, est_max))
-
         nearest = float(np.min(np.abs(train_openings - opening)))
         is_training_opening = bool(np.isclose(train_openings, opening).any())
         distance_score = 0.0 if is_training_opening else min(1.0, nearest / max_spacing)
+        role_posterior = scorer.posterior(est_ref)
 
-        role_scores: Dict[str, float] = {}
-        role_coverage: Dict[str, float] = {}
-        role_order_scores: Dict[str, float] = {}
-        for role, zone in zones.items():
-            fit = zone_closeness(est_ref, zone)
-            coverage = overlap_ratio(est_interval, zone)
-            order = order_score(est_ref, role, thresholds)
-            score = (
-                cfg.w_fit * fit
-                + cfg.w_coverage * coverage
-                + cfg.w_distance * distance_score
-                + cfg.w_order * order
-            )
-            role_scores[role] = float(score)
-            role_coverage[role] = float(coverage)
-            role_order_scores[role] = float(order)
-
-        best_role = max(role_scores, key=role_scores.get)
-        rows.append({
+        row: Dict[str, Any] = {
             "opening": int(opening),
             "selected_min_distance": int(min_distance),
             "estimated_mass_ref": float(est_ref),
@@ -380,23 +388,42 @@ def score_candidates(
             "estimated_mass_max": float(est_interval[1]),
             "min_distance_to_train": float(nearest),
             "distance_score": float(distance_score),
-            "low_score": float(role_scores["low"]),
-            "mid_score": float(role_scores["mid"]),
-            "high_score": float(role_scores["high"]),
-            "low_coverage": float(role_coverage["low"]),
-            "mid_coverage": float(role_coverage["mid"]),
-            "high_coverage": float(role_coverage["high"]),
-            "best_role": best_role,
             "is_training_opening": is_training_opening,
-            "best_role_order_score": float(role_order_scores[best_role]),
-        })
+        }
+        for role, zone in zones.items():
+            fit_prob = float(role_posterior[role])
+            coverage = overlap_ratio(est_interval, zone)
+            order = order_score(est_ref, role, thresholds)
+            row[f"{role}_fit_prob"] = fit_prob
+            row[f"{role}_coverage"] = float(coverage)
+            row[f"{role}_distance_metric"] = float(distance_score)
+            row[f"{role}_order_metric"] = float(order)
+        rows.append(row)
 
-    return pd.DataFrame(rows).sort_values("opening").reset_index(drop=True)
+    table = pd.DataFrame(rows)
+    role_weights: Dict[str, Dict[str, float]] = {}
+    for role in ["low", "mid", "high"]:
+        metric_cols = [
+            f"{role}_fit_prob",
+            f"{role}_coverage",
+            f"{role}_distance_metric",
+            f"{role}_order_metric",
+        ]
+        weights = compute_entropy_weights(table, metric_cols, eps=cfg.eps)
+        role_weights[role] = weights
+        norm_role = normalize_benefit_columns(table[metric_cols], metric_cols, eps=cfg.eps)
+        table[f"{role}_score"] = 0.0
+        for col in metric_cols:
+            table[f"{role}_score"] += norm_role[col] * weights[col]
+
+    score_cols = ["low_score", "mid_score", "high_score"]
+    table[score_cols] = table[score_cols].astype(float)
+    table["best_role"] = table[score_cols].idxmax(axis=1).str.replace("_score", "", regex=False)
+    table["best_role_order_score"] = table.apply(lambda r: float(r[f"{r['best_role']}_order_metric"]), axis=1)
+    table = table.sort_values("opening").reset_index(drop=True)
+    return table, role_weights
 
 
-# ============================================================================
-# 三元组搜索
-# ============================================================================
 def spacing_score(low: int, mid: int, high: int, cand_min: int, cand_max: int) -> float:
     span = max(1.0, float(cand_max - cand_min))
     return float(max(0.0, min(1.0, ((mid - low) + (high - mid)) / span)))
@@ -408,7 +435,7 @@ def balance_score(low: int, mid: int, high: int) -> float:
     return float(1.0 - abs(g1 - g2) / max(1e-9, g1 + g2))
 
 
-def rank_triplets(candidate_scores: pd.DataFrame, selected_min_distance: int, feasible_distances: List[int], cfg: SearchConfig) -> pd.DataFrame:
+def build_triplets(candidate_scores: pd.DataFrame, selected_min_distance: int, feasible_distances: List[int]) -> pd.DataFrame:
     table = candidate_scores.sort_values("opening").reset_index(drop=True)
     openings = table["opening"].tolist()
     lookup = {int(row["opening"]): row for _, row in table.iterrows()}
@@ -424,16 +451,6 @@ def rank_triplets(candidate_scores: pd.DataFrame, selected_min_distance: int, fe
                 low_row = lookup[int(low)]
                 mid_row = lookup[int(mid)]
                 high_row = lookup[int(high)]
-                space = spacing_score(int(low), int(mid), int(high), cand_min, cand_max)
-                balance = balance_score(int(low), int(mid), int(high))
-                total = (
-                    float(low_row["low_score"])
-                    + float(mid_row["mid_score"])
-                    + float(high_row["high_score"])
-                    + cfg.w_spacing * space
-                    + cfg.w_balance * balance
-                    + cfg.w_distance_bonus * distance_bonus
-                )
                 rows.append({
                     "low_opening": int(low),
                     "mid_opening": int(mid),
@@ -445,42 +462,63 @@ def rank_triplets(candidate_scores: pd.DataFrame, selected_min_distance: int, fe
                     "low_role_score": float(low_row["low_score"]),
                     "mid_role_score": float(mid_row["mid_score"]),
                     "high_role_score": float(high_row["high_score"]),
-                    "spacing_score": float(space),
-                    "balance_score": float(balance),
+                    "spacing_score": float(spacing_score(int(low), int(mid), int(high), cand_min, cand_max)),
+                    "balance_score": float(balance_score(int(low), int(mid), int(high))),
                     "distance_bonus": float(distance_bonus),
-                    "total_score": float(total),
                 })
 
     if not rows:
         raise ValueError("没有找到满足 low < mid < high 的候选三元组。")
+    return pd.DataFrame(rows)
 
-    ranking = pd.DataFrame(rows).sort_values(
+
+def rank_triplets(triplets: pd.DataFrame, cfg: SearchConfig) -> Tuple[pd.DataFrame, Dict[str, float]]:
+    metric_cols = [
+        "low_role_score",
+        "mid_role_score",
+        "high_role_score",
+        "spacing_score",
+        "balance_score",
+        "distance_bonus",
+    ]
+    weights = compute_entropy_weights(triplets, metric_cols, eps=cfg.eps)
+    norm_triplets = normalize_benefit_columns(triplets[metric_cols], metric_cols, eps=cfg.eps)
+    ranking = triplets.copy()
+    ranking["total_score"] = 0.0
+    for col in metric_cols:
+        ranking["total_score"] += norm_triplets[col] * weights[col]
+    ranking = ranking.sort_values(
         ["total_score", "selected_min_distance", "high_opening", "mid_opening", "low_opening"],
         ascending=[False, False, False, False, False],
     ).reset_index(drop=True)
     ranking.insert(0, "rank", np.arange(1, len(ranking) + 1))
-    return ranking
+    return ranking, weights
 
 
-# ============================================================================
-# 实验入口
-# ============================================================================
 def run_experiment(data_path: str | Path, output_dir: str | Path, cfg: SearchConfig | None = None) -> Dict[str, Any]:
     cfg = cfg or SearchConfig()
     cfg.validate()
 
     df = load_data(data_path, cfg)
     models = fit_opening_models(df)
+    interpolator = ParamInterpolator(models)
     thresholds = learn_mass_thresholds(df, cfg)
     feasible_distances = get_feasible_distances(df, cfg)
 
     candidate_tables = []
     triplet_tables = []
+    candidate_role_weights: Dict[str, Dict[str, float]] = {}
+    triplet_entropy_weights: Dict[str, float] = {}
+
     for d in feasible_distances:
-        candidates = score_candidates(df, models, thresholds, d, cfg)
+        candidates, role_weights = score_candidates(df, interpolator, thresholds, d, cfg)
         candidate_tables.append(candidates)
-        triplets = rank_triplets(candidates, d, feasible_distances, cfg)
-        triplet_tables.append(triplets)
+        for role, weights in role_weights.items():
+            candidate_role_weights[f"distance_{d}_{role}"] = weights
+        triplets = build_triplets(candidates, d, feasible_distances)
+        ranking, triplet_weights = rank_triplets(triplets, cfg)
+        triplet_tables.append(ranking)
+        triplet_entropy_weights[f"distance_{d}"] = triplet_weights
 
     candidate_scores = pd.concat(candidate_tables, ignore_index=True)
     triplet_ranking = pd.concat(triplet_tables, ignore_index=True)
@@ -499,6 +537,8 @@ def run_experiment(data_path: str | Path, output_dir: str | Path, cfg: SearchCon
         "learned_thresholds": thresholds,
         "mass_zones": build_mass_zones(df, thresholds),
         "feasible_min_distances": feasible_distances,
+        "candidate_role_entropy_weights": candidate_role_weights,
+        "triplet_entropy_weights": triplet_entropy_weights,
         "best_triplet": best,
         "top_triplets": triplet_ranking.head(cfg.top_k).to_dict(orient="records"),
     }
@@ -511,7 +551,6 @@ def run_experiment(data_path: str | Path, output_dir: str | Path, cfg: SearchCon
 def save_results(output_dir: str | Path, models: pd.DataFrame, candidate_scores: pd.DataFrame, triplet_ranking: pd.DataFrame, summary: Dict[str, Any]) -> None:
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
-
     models.to_csv(output_dir / "opening_models.csv", index=False, encoding="utf-8-sig")
     candidate_scores.to_csv(output_dir / "candidate_scores.csv", index=False, encoding="utf-8-sig")
     triplet_ranking.to_csv(output_dir / "triplet_ranking.csv", index=False, encoding="utf-8-sig")
@@ -522,9 +561,8 @@ def save_results(output_dir: str | Path, models: pd.DataFrame, candidate_scores:
 def print_report(summary: Dict[str, Any]) -> None:
     best = summary["best_triplet"]
     th = summary["learned_thresholds"]
-
-    print("\n" + "=" * 78)
-    print("开度阈值自动搜索实验")
+    print("=" * 78)
+    print("开度阈值自动搜索实验（学术增强版：GMM + PCHIP + 熵权法）")
     print("=" * 78)
     print(f"数据文件           : {summary['data_path']}")
     print(f"参考转速           : {summary['reference_speed']:.2f} r/min")
@@ -534,10 +572,10 @@ def print_report(summary: Dict[str, Any]) -> None:
     print(f"可行最小距离集合   : {summary['feasible_min_distances']}")
     print("-" * 78)
     print("最优三元组")
-    print(f"low_opening        : {best['low_opening']} mm")
-    print(f"mid_opening        : {best['mid_opening']} mm")
-    print(f"high_opening       : {best['high_opening']} mm")
-    print(f"selected_distance  : {best['selected_min_distance']} mm")
+    print(f"low_opening        : {best['low_opening']:.1f} mm")
+    print(f"mid_opening        : {best['mid_opening']:.1f} mm")
+    print(f"high_opening       : {best['high_opening']:.1f} mm")
+    print(f"selected_distance  : {best['selected_min_distance']:.1f} mm")
     print(f"estimated_mass     : [{best['low_estimated_mass']:.2f}, {best['mid_estimated_mass']:.2f}, {best['high_estimated_mass']:.2f}] g/min")
     print(f"total_score        : {best['total_score']:.6f}")
     print("-" * 78)
@@ -552,6 +590,7 @@ def build_config(settings: Dict[str, Any]) -> SearchConfig:
         include_training_openings=bool(settings.get("include_training_openings", True)),
         top_k=int(settings.get("top_k", 20)),
         random_seed=int(settings.get("random_seed", 42)),
+        gmm_reg_covar=float(settings.get("gmm_reg_covar", 1e-6)),
     )
 
 
