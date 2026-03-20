@@ -1,0 +1,1265 @@
+{
+  "config": {
+    "opening_col": "排肥口开度（mm）",
+    "speed_col": "排肥轴转速（r/min）",
+    "mass_col": "实际排肥质量（g/min）",
+    "reference_speed": null,
+    "fixed_min_distance": null,
+    "require_internal_range": true,
+    "include_training_openings": true,
+    "top_k": 20,
+    "random_seed": 42,
+    "gmm_reg_covar": 1e-06,
+    "n_components": 3,
+    "eps": 1e-12
+  },
+  "data_path": "data/dataset.xlsx",
+  "reference_speed": 40.0,
+  "train_openings": [
+    20.0,
+    25.0,
+    30.0,
+    35.0,
+    40.0,
+    45.0,
+    50.0
+  ],
+  "learned_thresholds": {
+    "low_mid_threshold": 3368.765330828986,
+    "mid_high_threshold": 5246.281533566168,
+    "component_means": [
+      2523.9454812012755,
+      4109.302976446198,
+      6174.624732413118
+    ],
+    "component_variances": [
+      447000.87743898993,
+      566203.135851853,
+      944557.9397201276
+    ],
+    "component_weights": [
+      0.4242342801815363,
+      0.3487702763758507,
+      0.22699544344261308
+    ],
+    "cluster_stats": [
+      {
+        "component": 0,
+        "mean": 2523.9454812012755,
+        "variance": 447000.87743898993,
+        "weight": 0.4242342801815363,
+        "count": 126,
+        "mass_min": 1144.27021563529,
+        "mass_max": 3345.26629290165
+      },
+      {
+        "component": 1,
+        "mean": 4109.302976446198,
+        "variance": 566203.135851853,
+        "weight": 0.3487702763758507,
+        "count": 99,
+        "mass_min": 3381.0774078332,
+        "mass_max": 5217.88910745237
+      },
+      {
+        "component": 2,
+        "mean": 6174.624732413118,
+        "variance": 944557.9397201276,
+        "weight": 0.22699544344261308,
+        "count": 62,
+        "mass_min": 5250.25481375497,
+        "mass_max": 8234.02272554259
+      }
+    ],
+    "gmm_lower_bound": -8.73519333921767
+  },
+  "mass_zones": {
+    "low": [
+      1144.27021563529,
+      3368.765330828986
+    ],
+    "mid": [
+      3368.765330828986,
+      5246.281533566168
+    ],
+    "high": [
+      5246.281533566168,
+      8234.02272554259
+    ]
+  },
+  "feasible_min_distances": [
+    1,
+    2,
+    3,
+    4,
+    5,
+    6,
+    7,
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    23,
+    24,
+    25,
+    26,
+    27,
+    28,
+    29,
+    30
+  ],
+  "candidate_role_entropy_weights": {
+    "distance_1_low": {
+      "low_fit_prob": 0.35877958961409984,
+      "low_coverage": 0.11213344194715802,
+      "low_distance_metric": 0.1698947887131262,
+      "low_order_metric": 0.35919217972561596
+    },
+    "distance_1_mid": {
+      "mid_fit_prob": 0.16179189030792732,
+      "mid_coverage": 0.07618549846429583,
+      "mid_distance_metric": 0.21625567015373584,
+      "mid_order_metric": 0.545766941074041
+    },
+    "distance_1_high": {
+      "high_fit_prob": 0.3032973405682962,
+      "high_coverage": 0.21892384398037046,
+      "high_distance_metric": 0.10128819655977975,
+      "high_order_metric": 0.3764906188915536
+    },
+    "distance_2_low": {
+      "low_fit_prob": 0.33201525185150554,
+      "low_coverage": 0.1086790009927399,
+      "low_distance_metric": 0.2302510620359874,
+      "low_order_metric": 0.32905468511976715
+    },
+    "distance_2_mid": {
+      "mid_fit_prob": 0.14868482397797944,
+      "mid_coverage": 0.07318280676025501,
+      "mid_distance_metric": 0.2790523410015489,
+      "mid_order_metric": 0.49908002826021663
+    },
+    "distance_2_high": {
+      "high_fit_prob": 0.29136029485157067,
+      "high_coverage": 0.20891268422764445,
+      "high_distance_metric": 0.14242635986128407,
+      "high_order_metric": 0.3573006610595008
+    },
+    "distance_3_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_3_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_3_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_4_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_4_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_4_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_5_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_5_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_5_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_6_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_6_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_6_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_7_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_7_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_7_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_8_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_8_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_8_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_9_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_9_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_9_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_10_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_10_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_10_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_11_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_11_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_11_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_12_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_12_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_12_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_13_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_13_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_13_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_14_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_14_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_14_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_15_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_15_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_15_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_16_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_16_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_16_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_17_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_17_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_17_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_18_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_18_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_18_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_19_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_19_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_19_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_20_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_20_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_20_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_21_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_21_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_21_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_22_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_22_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_22_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_23_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_23_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_23_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_24_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_24_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_24_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_25_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_25_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_25_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_26_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_26_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_26_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_27_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_27_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_27_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_28_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_28_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_28_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_29_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_29_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_29_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    },
+    "distance_30_low": {
+      "low_fit_prob": 0.4128583297788593,
+      "low_coverage": 0.1710176060318248,
+      "low_distance_metric": 1.324765998983189e-16,
+      "low_order_metric": 0.4161240641893158
+    },
+    "distance_30_mid": {
+      "mid_fit_prob": 0.21547147101229214,
+      "mid_coverage": 0.12905735295827034,
+      "mid_distance_metric": 1.5002322691045484e-16,
+      "mid_order_metric": 0.6554711760294374
+    },
+    "distance_30_high": {
+      "high_fit_prob": 0.3492515437109015,
+      "high_coverage": 0.2528827746025875,
+      "high_distance_metric": 7.864800129967247e-17,
+      "high_order_metric": 0.3978656816865108
+    }
+  },
+  "triplet_entropy_weights": {
+    "distance_1": {
+      "low_role_score": 0.1139451093300242,
+      "mid_role_score": 0.22906194155181553,
+      "high_role_score": 0.25632463341043477,
+      "spacing_score": 0.16715319033424214,
+      "balance_score": 0.23351512537348335,
+      "distance_bonus": 0.0
+    },
+    "distance_2": {
+      "low_role_score": 0.10994981443449944,
+      "mid_role_score": 0.2384077513268191,
+      "high_role_score": 0.2377959922366488,
+      "spacing_score": 0.19250974067544302,
+      "balance_score": 0.2213367013265918,
+      "distance_bonus": -2.1751192116153354e-15
+    },
+    "distance_3": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_4": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_5": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_6": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_7": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_8": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_9": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_10": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_11": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_12": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_13": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_14": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_15": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_16": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_17": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_18": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_19": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_20": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_21": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_22": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_23": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_24": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_25": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_26": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_27": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_28": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_29": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    },
+    "distance_30": {
+      "low_role_score": 0.08420328149251083,
+      "mid_role_score": 0.29175586388796915,
+      "high_role_score": 0.1831743157977397,
+      "spacing_score": 0.23415031045944,
+      "balance_score": 0.20671622836233997,
+      "distance_bonus": 3.584542225595908e-16
+    }
+  },
+  "best_triplet": {
+    "rank": 1.0,
+    "low_opening": 22.0,
+    "mid_opening": 37.0,
+    "high_opening": 50.0,
+    "selected_min_distance": 1.0,
+    "low_estimated_mass": 2505.8494771586625,
+    "mid_estimated_mass": 4111.267217550765,
+    "high_estimated_mass": 5541.412730302787,
+    "low_role_score": 0.9674919438604787,
+    "mid_role_score": 0.8963313865844056,
+    "high_role_score": 0.8987118034412203,
+    "spacing_score": 0.9333333333333333,
+    "balance_score": 0.9285714285714286,
+    "distance_bonus": 0.03333333333333333,
+    "total_score": 0.9530208827907642
+  },
+  "top_triplets": [
+    {
+      "rank": 1,
+      "low_opening": 22,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9674919438604787,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9333333333333333,
+      "balance_score": 0.9285714285714286,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9530208827907642
+    },
+    {
+      "rank": 2,
+      "low_opening": 22,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9674919438604787,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9333333333333333,
+      "balance_score": 0.8571428571428572,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9523183753791434
+    },
+    {
+      "rank": 3,
+      "low_opening": 22,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9697486092386784,
+      "mid_role_score": 0.933459971919081,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 0.9333333333333333,
+      "balance_score": 0.9285714285714286,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.9519748067868501
+    },
+    {
+      "rank": 4,
+      "low_opening": 23,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2610.9560562228603,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9355447788733504,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9,
+      "balance_score": 0.962962962962963,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9518141447740343
+    },
+    {
+      "rank": 5,
+      "low_opening": 22,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9697486092386784,
+      "mid_role_score": 1.000000000001,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 0.9333333333333333,
+      "balance_score": 0.8571428571428572,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.9516882190061354
+    },
+    {
+      "rank": 6,
+      "low_opening": 23,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2610.9560562228603,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9355447788733504,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9,
+      "balance_score": 0.8888888888888888,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9504497464174773
+    },
+    {
+      "rank": 7,
+      "low_opening": 23,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2610.9560562228603,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9402146279878874,
+      "mid_role_score": 0.933459971919081,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 0.9,
+      "balance_score": 0.962962962962963,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.9496260693564123
+    },
+    {
+      "rank": 8,
+      "low_opening": 23,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2610.9560562228603,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9402146279878874,
+      "mid_role_score": 1.000000000001,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 0.9,
+      "balance_score": 0.8888888888888888,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.9487088926830293
+    },
+    {
+      "rank": 9,
+      "low_opening": 21,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2400.8141556944747,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9069282391277093,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9666666666666667,
+      "balance_score": 0.896551724137931,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.943696848788801
+    },
+    {
+      "rank": 10,
+      "low_opening": 21,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2400.8141556944747,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.9069282391277093,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.9666666666666667,
+      "balance_score": 0.8275862068965517,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9436105846707415
+    },
+    {
+      "rank": 11,
+      "low_opening": 24,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2716.0993624172015,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.8161727178279286,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.8666666666666667,
+      "balance_score": 1.0,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.940756681321157
+    },
+    {
+      "rank": 12,
+      "low_opening": 24,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2716.0993624172015,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.8161727178279286,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.8666666666666667,
+      "balance_score": 0.9230769230769231,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.938679477331592
+    },
+    {
+      "rank": 13,
+      "low_opening": 26,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2926.3686265388747,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.7377663186313111,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 0.8,
+      "balance_score": 1.0,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9365575502392259
+    },
+    {
+      "rank": 14,
+      "low_opening": 20,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2295.884622300161,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.830105211287874,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 1.0,
+      "balance_score": 0.8,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9334406472799295
+    },
+    {
+      "rank": 15,
+      "low_opening": 20,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2295.884622300161,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.830105211287874,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8987118034412203,
+      "spacing_score": 1.0,
+      "balance_score": 0.8666666666666667,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9329517509906651
+    },
+    {
+      "rank": 16,
+      "low_opening": 22,
+      "mid_opening": 37,
+      "high_opening": 49,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5432.83889423099,
+      "low_role_score": 0.9674919438604787,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8755860796762995,
+      "spacing_score": 0.9,
+      "balance_score": 0.8888888888888888,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9305246263619791
+    },
+    {
+      "rank": 17,
+      "low_opening": 23,
+      "mid_opening": 37,
+      "high_opening": 49,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2610.9560562228603,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5432.83889423099,
+      "low_role_score": 0.9355447788733504,
+      "mid_role_score": 0.8963313865844056,
+      "high_role_score": 0.8755860796762995,
+      "spacing_score": 0.8666666666666667,
+      "balance_score": 0.9230769230769231,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9292669736571771
+    },
+    {
+      "rank": 18,
+      "low_opening": 20,
+      "mid_opening": 38,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2295.884622300161,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.7697489379650126,
+      "mid_role_score": 1.000000000001,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 1.0,
+      "balance_score": 0.8,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.9291921157735044
+    },
+    {
+      "rank": 19,
+      "low_opening": 22,
+      "mid_opening": 38,
+      "high_opening": 49,
+      "selected_min_distance": 1,
+      "low_estimated_mass": 2505.8494771586625,
+      "mid_estimated_mass": 4222.259753869907,
+      "high_estimated_mass": 5432.83889423099,
+      "low_role_score": 0.9674919438604787,
+      "mid_role_score": 0.9644661408000322,
+      "high_role_score": 0.8755860796762995,
+      "spacing_score": 0.9,
+      "balance_score": 0.8148148148148149,
+      "distance_bonus": 0.03333333333333333,
+      "total_score": 0.9291602280054223
+    },
+    {
+      "rank": 20,
+      "low_opening": 20,
+      "mid_opening": 37,
+      "high_opening": 50,
+      "selected_min_distance": 2,
+      "low_estimated_mass": 2295.884622300161,
+      "mid_estimated_mass": 4111.267217550765,
+      "high_estimated_mass": 5541.412730302787,
+      "low_role_score": 0.7697489379650126,
+      "mid_role_score": 0.933459971919081,
+      "high_role_score": 0.857573640139716,
+      "spacing_score": 1.0,
+      "balance_score": 0.8666666666666667,
+      "distance_bonus": 0.06666666666666667,
+      "total_score": 0.928343643547416
+    }
+  ]
+}

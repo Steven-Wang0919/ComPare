@@ -1,72 +1,27 @@
+﻿# 基于 KAN / MLP / GRNN 的排肥系统论文实验复现工程
 
-# 基于 KAN / MLP / GRNN 的排肥系统建模与智能控制论文工程
+## 1. 项目定位
 
-## 1. 项目简介
+本仓库仅保留论文实验与结果复现能力，包含：
 
-本工程用于完成排肥系统的建模、对比实验、智能控制验证与论文结果复现，主要包含以下两类任务。
+1. 正向建模（开度、转速 -> 排肥量）
+2. 反向建模（目标排肥量、开度 -> 转速）
+3. 正反向模型统一对比
+4. 泛化评估与反向开度留出评估
 
-### 1.1 正向建模任务
-
-输入排肥口开度与排肥轴转速，预测排肥量。
-
-- 输入：`[开度(mm), 转速(r/min)]`
-- 输出：`排肥量(g/min)`
-
-### 1.2 反向建模任务
-
-本工程中的反向任务服务于“转速优先”的排肥控制方法，其基本逻辑为：
-
-1. 先根据目标排肥量所在区间确定策略开度  
-2. 在策略开度确定的前提下，再调节排肥轴转速以实现目标排肥量  
-
-因此，反向模型在形式上可表示为：
-
-- 输入：`[目标排肥量(g/min), 开度(mm)]`
-- 输出：`转速(r/min)`
-
-但在论文主任务定义中，这里的“开度”并不是任意给定开度，而是由目标排肥量对应的**策略开度**所确定。  
-换言之，反向模型的核心应用场景是：
-
-> 在策略开度已确定的条件下，预测实现目标排肥量所需的排肥轴转速。
-
-### 1.3 模型类型
-
-本工程包含以下模型：
-
-- KAN
-- MLP
-- GRNN
-
-### 1.4 项目目标
-
-本工程主要用于：
-
-1. 建立排肥系统正向预测模型  
-2. 建立排肥系统反向控制模型  
-3. 对比不同模型在任务中的表现  
-4. 构建交互式智能控制终端  
-5. 为论文实验与结果复现提供工程支撑  
+不再包含交互端/菜单式控制终端相关功能。
 
 ---
 
-## 2. 工程目录说明
-
-建议目录结构如下：
+## 2. 目录结构（当前版本）
 
 ```text
 .
 ├── data/
 │   └── dataset.xlsx
-├── output_data/
-├── output_picture/
-├── ComPare_Pic/
-├── path/
-│   ├── kan_forward.pth
-│   ├── kan_forward_meta.json
-│   ├── kan_inverse.pth
-│   ├── kan_inverse_meta.json
-│   └── model_meta.json
+├── runs/
 ├── common_utils.py
+├── run_utils.py
 ├── train_kan.py
 ├── train_mlp.py
 ├── train_grnn.py
@@ -74,606 +29,184 @@
 ├── inverse_mlp.py
 ├── inverse_grnn.py
 ├── compare_all.py
-├── compare_inverse_models.py
 ├── plot_figures.py
-├── interactive_app.py
+├── evaluate_generalization.py
+├── evaluate_inverse_opening_holdout.py
+├── select_opening_thresholds_research.py
 ├── requirements.txt
 └── README.md
 ```
 
-各文件含义如下：
+说明：
 
-* `data/dataset.xlsx`：原始实验数据
-* `common_utils.py`：公共函数，包括数据读取、划分、误差指标等
-* `train_kan.py`：正向 KAN 模型训练脚本，并保存正向部署工件
-* `train_mlp.py`：正向 MLP 模型训练脚本
-* `train_grnn.py`：正向 GRNN 模型训练脚本
-* `inverse_kan.py`：反向 KAN 模型训练脚本，并保存反向部署工件
-* `inverse_mlp.py`：反向 MLP 模型训练脚本
-* `inverse_grnn.py`：反向 GRNN 模型训练脚本
-* `compare_all.py`：正向模型对比脚本
-* `compare_inverse_models.py`：反向模型对比脚本
-* `plot_figures.py`：生成正向任务论文图像
-* `interactive_app.py`：交互式智能控制终端
-* `requirements.txt`：作者当前真实环境依赖记录
+- 结果统一落盘到 `runs/<timestamp>_<entry>/`。
+- 历史目录 `output_data/`、`output_picture/`、`ComPare_Pic/` 若存在可作为旧结果存档，不是当前默认输出目录。
 
 ---
 
-## 3. 数据说明
-
-数据文件路径为：
-
-```text
-data/dataset.xlsx
-```
-
-数据主要包含以下物理量：
-
-* 排肥口开度（mm）
-* 排肥轴转速（r/min）
-* 排肥量（g/min）
-
-在代码中通常采用以下约定。
+## 3. 任务定义与实验口径
 
 ### 3.1 正向任务
 
-* 输入：`X = [开度, 转速]`
-* 输出：`y = 排肥量`
+- 输入：`[开度(mm), 转速(r/min)]`
+- 输出：`排肥量(g/min)`
 
 ### 3.2 反向任务
 
-反向任务在数据组织形式上定义为：
+- 输入：`[目标排肥量(g/min), 开度(mm)]`
+- 输出：`转速(r/min)`
 
-* 输入：`X = [目标排肥量, 开度]`
-* 输出：`y = 转速`
+论文主结论采用“策略一致子集”口径：
 
-其中需要注意：
+- 先由目标排肥量映射策略开度
+- 再在该策略开度下评估反向模型的转速预测
 
-* 从建模形式上看，输入中显式包含“开度”
-* 从控制策略上看，论文主任务对应的是“转速优先”场景，即：
+当前默认策略阈值：
 
-  * 开度先由目标排肥量所属区间确定
-  * 再由模型预测所需转速
+- `< 2800` -> `20 mm`
+- `2800 <= x < 4800` -> `35 mm`
+- `>= 4800` -> `50 mm`
 
-因此，反向模型既可以在全样本空间中作为一般逆映射模型进行补充分析，也可以在“实际开度与策略开度一致”的样本子集上，作为论文主任务进行严格评估。
+### 3.3 统一训练流程
 
----
+所有模型统一遵循：
 
-## 4. 统一实验口径说明
+1. `train` 训练候选模型
+2. `val` 选择超参数
+3. `train + val` 训练最终模型
+4. `test` 评估
 
-为保证论文实验结果可复现、可比较，本工程统一采用如下口径。
-
-### 4.1 数据划分
-
-所有模型统一使用：
-
-* `train`
-* `val`
-* `test`
-
-划分方式由 `common_utils.get_train_val_test_indices()` 提供。
-
-### 4.2 归一化口径
-
-正向与反向任务均采用归一化处理，但统计口径不同。
-
-#### 正向模型
-
-* 输入做 0-1 归一化
-* 输出在训练中做 0-1 归一化
-* **归一化统计范围使用 `train`**
-
-说明：
-
-* 超参数选择阶段使用 `train -> val`
-* 最终模型使用 `train + val` 重新训练
-* 但归一化统计量仍严格来自 `train`
-
-#### 反向模型
-
-* 输入做 0-1 归一化
-* 输出做 0-1 归一化
-* **归一化统计范围使用 `train`**
-
-说明：
-
-* 超参数选择阶段使用 `train -> val`
-* 最终模型使用 `train + val` 重新训练
-* 但归一化统计量仍严格来自 `train`
-* 反向 KAN 与交互系统中的反向部署均遵循该口径
-
-### 4.3 调参与最终训练
-
-统一采用以下流程：
-
-1. 用 `train` 训练候选模型
-2. 用 `val` 选择最优超参数
-3. 用 `train + val` 训练最终模型
-4. 在 `test` 上进行最终评估
-
-### 4.4 反向任务的主评估口径与补充评估口径
-
-反向模型服务于“转速优先”控制方法，因此论文主任务并不是针对任意“目标排肥量—开度”组合建立无约束逆映射，而是针对：
-
-> 目标排肥量先决定策略开度，在该策略开度下预测所需排肥轴转速
-
-这一控制场景建立模型。
-
-基于上述任务定义，反向模型测试时采用两套口径。
-
-#### （1）主评估口径：策略一致子集
-
-主结果只在满足下述条件的测试样本上统计：
-
-> 实际开度 = 策略推荐开度
-
-该部分结果对应论文中的主要结论，因为它与“转速优先”控制逻辑保持一致。
-在当前默认划分下，该主评估子集覆盖测试集约 29.5%（13/44）；其余样本仅纳入全测试集补充评估。
-
-#### （2）补充评估口径：全测试集
-
-除主评估外，代码中同时给出全测试集上的补充结果，用于透明展示模型在更一般样本空间下的表现。
-该结果仅作为补充分析，不作为论文主结论。
-
-当前开度策略为：
-
-* 目标排肥量 `< 2800` → 开度 `20 mm`
-* `2800 <= 目标排肥量 < 4800` → 开度 `35 mm`
-* `>= 4800` → 开度 `50 mm`
-
-因此，若某测试样本的实际开度与上述策略开度一致，则该样本被纳入主评估子集；否则仅保留在全测试集补充评估中。
-
-### 4.5 关于反向任务评估口径的说明
-
-需要说明的是，反向模型的“主评估口径”和“补充评估口径”对应不同问题：
-
-* 主评估口径回答的是：在“转速优先”控制逻辑下，模型是否能够为策略开度对应的工况准确给出所需转速
-* 补充评估口径回答的是：若将反向模型视为一般逆映射模型，其在整个测试样本空间中的表现如何
-
-因此：
-
-* 主结果用于支撑论文中的控制策略结论
-* 补充结果用于增强实验透明性，避免将受策略约束的问题与无约束逆映射问题混为一谈
+归一化统计范围统一使用 `train`。
 
 ---
 
-## 5. 各脚本功能说明
+## 4. 核心脚本
 
-### 5.1 公共模块
+### 4.1 训练脚本
 
-#### `common_utils.py`
+- `train_kan.py`：正向 KAN
+- `train_mlp.py`：正向 MLP
+- `train_grnn.py`：正向 GRNN
+- `inverse_kan.py`：反向 KAN
+- `inverse_mlp.py`：反向 MLP
+- `inverse_grnn.py`：反向 GRNN
 
-提供以下公共能力：
+### 4.2 对比与绘图
 
-* 数据读取
-* `train / val / test` 划分
-* 平均相对误差（Average Relative Error, ARE）计算
+- `compare_all.py`：统一输出正向与反向三模型对比结果
+- `plot_figures.py`：基于某次 `compare_all.py` 结果目录绘图
 
----
+### 4.3 泛化与补充评估
 
-### 5.2 正向模型脚本
+- `evaluate_generalization.py`：多协议泛化评估
+- `evaluate_inverse_opening_holdout.py`：反向开度留出评估
+- `select_opening_thresholds_research.py`：策略阈值研究脚本
 
-#### `train_kan.py`
+### 4.4 公共模块
 
-训练正向 KAN 模型。
-
-* 输入：`[开度, 转速]`
-* 输出：`排肥量`
-
-功能说明：
-
-* 在 `val` 上进行超参数搜索
-* 用 `train + val` 训练最终模型
-* 正向归一化统计量使用 `train`
-* 保存正向部署工件：
-
-  * `path/kan_forward.pth`
-  * `path/kan_forward_meta.json`
-
-#### `train_mlp.py`
-
-训练正向 MLP 模型。
-
-#### `train_grnn.py`
-
-训练正向 GRNN 模型。
-
-#### `compare_all.py`
-
-对比正向模型性能。
-
-功能说明：
-
-* 统一调用：
-
-  * `train_mlp.py`
-  * `train_grnn.py`
-  * `train_kan.py`
-* 输出统一指标表与预测表
-* **要求三个模型的测试样本完全一致**
-* 若测试长度不一致或真值不一致，脚本会直接报错
-* **不允许通过静默截断对齐结果**
-
-输出文件通常包括：
-
-* `output_data/forward_model_metrics.csv`
-* `output_data/forward_model_predictions.csv`
-
-#### `plot_figures.py`
-
-基于 `compare_all.py` 生成的结果文件绘制图像。
-
-功能说明：
-
-* 绘制 `R²` 对比图
-* 绘制 `ARE` 对比图
-* 绘制真实值与预测值散点图
-* 绘制残差分布图
-* **按模型名显式匹配指标，不依赖 `model_metrics.csv` 的行顺序**
+- `common_utils.py`：数据读取、划分、指标
+- `run_utils.py`：运行目录与 manifest 管理
 
 ---
 
-### 5.3 反向模型脚本
+## 5. 推荐运行顺序（实验专用）
 
-#### `inverse_kan.py`
-
-训练并评估反向 KAN 模型。
-
-说明：
-
-* 任务形式：输入 `[目标排肥量, 开度]`，输出 `转速`
-* 主评估口径：策略一致子集
-* 补充评估口径：全测试集
-* 归一化统计范围：`train`
-* 保存反向部署工件：
-
-  * `path/kan_inverse.pth`
-  * `path/kan_inverse_meta.json`
-
-#### `inverse_mlp.py`
-
-训练并评估反向 MLP 模型。
-
-说明：
-
-* 任务形式：输入 `[目标排肥量, 开度]`，输出 `转速`
-* 主评估口径：策略一致子集
-* 补充评估口径：全测试集
-
-#### `inverse_grnn.py`
-
-训练并评估反向 GRNN 模型。
-
-说明：
-
-* 任务形式：输入 `[目标排肥量, 开度]`，输出 `转速`
-* 主评估口径：策略一致子集
-* 补充评估口径：全测试集
-
-#### `compare_inverse_models.py`
-
-对比三种反向模型：
-
-* KAN
-* MLP
-* GRNN
-
-统一说明：
-
-* 三种模型均按相同数据划分与相同任务定义进行训练
-* 默认基于“策略一致子集”生成主结果对比
-* 同时保留全测试集补充结果，用于透明展示
-
-输出内容通常包括：
-
-* 主结果指标对比图
-* 主结果真实值与预测值散点图
-* 三模型主结果汇总
-* 三模型全测试集补充结果汇总
-
----
-
-### 5.4 交互系统脚本
-
-#### `interactive_app.py`
-
-交互式智能控制终端，支持以下两类功能。
-
-#### 1）正向预测
-
-输入开度与转速，预测排肥量。
-
-#### 2）智能控制
-
-输入目标排肥量，系统自动推荐：
-
-* 策略开度
-* 对应转速
-
-说明：
-
-* 启动时优先加载 `path/` 中的模型权重与工件元数据
-* 正向模型优先读取：
-
-  * `path/kan_forward.pth`
-  * `path/kan_forward_meta.json`
-* 反向模型优先读取：
-
-  * `path/kan_inverse.pth`
-  * `path/kan_inverse_meta.json`
-* `path/model_meta.json` 仅保存**交互系统配置**
-* 若工件缺失或工件与权重不匹配，当前版本会直接报错并拒绝启动阶段自动回退
-* 当前交互系统加入了：
-
-  * 输入越界检查
-  * 外推预测告警
-  * 输出裁剪到训练数据支持范围
-
-需要强调：
-
-* 论文正式结果仍以训练脚本和对比脚本输出为准
-* 交互系统主要用于模型部署展示与控制验证
-
----
-
-## 6. 配置文件与工件说明
-
-### 6.1 `model_meta.json`
-
-该文件是**交互系统配置文件**，用于保存：
-
-* `seed`
-* `data_path`
-* `enable_range_warning`
-* `enable_output_clipping`
-* `prefer_saved_artifacts`
-
-它**不是模型工件元数据**，也**不保存模型训练超参数**。
-
-### 6.2 `kan_forward_meta.json`
-
-该文件是**正向模型工件元数据**，通常包含：
-
-* 模型类型
-* 超参数
-* 归一化参数
-* 训练域边界
-* 权重路径
-
-### 6.3 `kan_inverse_meta.json`
-
-该文件是**反向模型工件元数据**，通常包含：
-
-* 模型类型
-* 超参数
-* 策略阈值
-* 归一化参数
-* 训练域边界
-* 权重路径
-
----
-
-## 7. 推荐运行顺序
-
-建议按以下顺序运行工程。
-
-### 第一步：确认数据文件存在
-
-确保以下文件存在：
-
-* `data/dataset.xlsx`
-* `common_utils.py`
-
-### 第二步：运行正向模型对比
-
-```bash
-python compare_all.py
-```
-
-用于生成正向模型的主要实验结果与图像输入数据。
-
-### 第三步：生成正向图像
-
-```bash
-python plot_figures.py
-```
-
-用于生成正向任务图像。
-
-### 第四步：运行反向模型对比
-
-```bash
-python compare_inverse_models.py
-```
-
-用于生成论文中反向模型的主要实验结果。
-
-### 第五步：启动交互系统
-
-```bash
-python interactive_app.py
-```
-
-用于进行功能展示与控制验证。
-
----
-
-## 8. 交互系统与论文实验的关系
-
-本工程中：
-
-* **论文实验结果** 以各训练脚本和对比脚本输出结果为准
-* **交互系统** 用于展示模型在智能控制任务中的应用方式
-
-说明：
-
-* 若 `path/` 中存在旧版权重文件，而当前模型结构已更新，程序会提示加载失败
-* 当前版本不会在启动阶段自动重新训练，需由用户在菜单中显式选择重训练，或先运行正式训练脚本生成新工件
-* 建议在最终整理工程时清理旧版 `path/` 目录，避免模型版本混淆
-
----
-
-## 9. 模型版本说明
-
-当前工程建议采用如下“唯一权威版本”：
-
-* 正向 KAN：`train_kan.py`
-* 反向 KAN：`inverse_kan.py`
-* 反向 MLP：`inverse_mlp.py`
-* 反向 GRNN：`inverse_grnn.py`
-
----
-
-## 10. 输出结果说明
-
-### 10.1 图像输出
-
-正向模型图像通常输出至：
-
-```text
-output_picture/
-```
-
-例如：
-
-* `r2_comparison_zoomed.png`
-* `are_comparison_zoomed.png`
-* `true_vs_predicted.png`
-* `residuals_distribution.png`
-
-反向模型图像通常输出至：
-
-```text
-ComPare_Pic/
-```
-
-### 10.2 模型权重输出
-
-模型权重通常保存在：
-
-```text
-path/
-```
-
-包括：
-
-* `kan_forward.pth`
-* `kan_inverse.pth`
-
-### 10.3 工件元数据输出
-
-模型工件元数据通常保存在：
-
-```text
-path/
-```
-
-包括：
-
-* `kan_forward_meta.json`
-* `kan_inverse_meta.json`
-
-### 10.4 交互系统配置输出
-
-交互系统配置通常保存在：
-
-```text
-path/
-```
-
-包括：
-
-* `model_meta.json`
-
-### 10.5 结果表输出
-
-若训练脚本启用了结果导出，则通常位于：
-
-```text
-output_data/
-```
-
----
-
-## 11. 环境说明
-
-本项目的 `requirements.txt` 记录了作者实验时使用的环境依赖版本，可作为复现参考。
-
-说明：
-
-* `requirements.txt` 优先保证作者实验环境可追溯
-* 在其他设备上复现时，应根据本机 CPU / CUDA 环境安装兼容版本的 PyTorch
-* 若目标环境与作者环境不同，可在保持主要依赖版本兼容的前提下进行适配
-
-项目常用依赖包括：
-
-* `numpy`
-* `pandas`
-* `matplotlib`
-* `scikit-learn`
-* `openpyxl`
-* `torch`
-* `seaborn`
-
-安装依赖可使用：
+### 5.1 安装依赖
 
 ```bash
 pip install -r requirements.txt
 ```
 
-若使用 GPU，请确保：
-
-* 当前系统已安装可用 CUDA 环境
-* PyTorch 与 CUDA 版本兼容
-
----
-
-## 12. 复现建议
-
-为了提高论文结果复现性，建议：
-
-1. 固定随机种子
-2. 保持数据文件不变
-3. 不混用旧版模型文件
-4. 在最终运行前清理旧的 `path/` 目录或确认工件版本一致
-5. 按统一顺序重新生成结果图与结果表
-
-推荐复现流程：
+### 5.2 运行正反向统一对比
 
 ```bash
 python compare_all.py
+```
+
+输出到：`runs/<timestamp>_compare_all/`
+
+典型文件：
+
+- `forward_model_metrics.csv`
+- `forward_model_predictions.csv`
+- `inverse_model_metrics.csv`
+- `inverse_model_predictions_all.csv`
+- `inverse_model_predictions_main.csv`
+- `run_manifest.json`
+
+### 5.3 基于对比结果绘图
+
+```bash
 python plot_figures.py
-python compare_inverse_models.py
-python interactive_app.py
+```
+
+默认自动查找最新 `runs/*_compare_all`，图片输出到该目录下 `figures/`。
+
+如需显式指定：
+
+```bash
+python plot_figures.py --run-dir runs/<timestamp>_compare_all
+```
+
+### 5.4 可选扩展评估
+
+```bash
+python evaluate_generalization.py
+python evaluate_inverse_opening_holdout.py
 ```
 
 ---
 
-## 13. 注意事项
+## 6. 输出目录约定
 
-1. 本工程当前重点保证的是：
+### 6.1 统一原则
 
-   * 模型实验逻辑统一
-   * 数据处理口径一致
-   * 交互系统与论文模型版本尽量一致
+当前版本默认不向仓库根目录写实验主结果，统一写入：
 
-2. 若修改网络结构或超参数：
+```text
+runs/<timestamp>_<entry>/
+```
 
-   * 应重新训练模型权重
-   * 应重新生成工件元数据
-   * 应重新生成结果图表
+### 6.2 典型输出示例
 
-3. 若发现 `interactive_app.py` 启动时报“旧权重不兼容”：
+- `runs/<timestamp>_train_kan/results_kan.csv`
+- `runs/<timestamp>_train_kan/artifacts/kan_forward.pth`
+- `runs/<timestamp>_train_kan/artifacts/kan_forward_meta.json`
+- `runs/<timestamp>_inverse_kan/inverse_kan_predictions_all.csv`
+- `runs/<timestamp>_inverse_kan/inverse_kan_predictions_main.csv`
+- `runs/<timestamp>_inverse_kan/artifacts/kan_inverse.pth`
+- `runs/<timestamp>_inverse_kan/artifacts/kan_inverse_meta.json`
 
-   * 通常是旧版权重与当前模型结构不一致
-   * 程序自动重训即可
-   * 这不是程序错误
+---
 
-4. 若工件元数据缺失：
+## 7. 对外接口说明
 
-   * 交互系统会退回到原始数据读取逻辑
-   * 但建议优先使用训练脚本重新生成完整工件
+### 7.1 保留入口
 
-5. `requirements.txt` 中记录的是作者真实环境，尤其是 PyTorch 版本可能依赖具体 CUDA 环境；
-   因此在其他机器上复现时，可能需要做适配安装。
+- `python compare_all.py`
+- `python plot_figures.py`
+- `python evaluate_generalization.py`
+- `python evaluate_inverse_opening_holdout.py`
 
+### 7.2 变更说明
+
+- 原交互端 CLI 已移除。
+- 原交互配置文件接口已移除。
+
+---
+
+## 8. 复现建议
+
+1. 固定随机种子（默认 `seed=42`）
+2. 保持 `data/dataset.xlsx` 不变
+3. 不混用不同日期 run 的工件与结果
+4. 先跑 `compare_all.py` 再跑 `plot_figures.py`
+5. 在论文报告中优先使用主口径（策略一致子集）结论
+
+---
+
+## 9. 环境说明
+
+`requirements.txt` 记录作者实验环境版本，可作为复现基线。
+
+若目标机器的 CUDA/CPU 条件不同，建议在保持主依赖兼容前提下调整 PyTorch 安装版本。
