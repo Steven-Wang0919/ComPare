@@ -1,0 +1,113 @@
+
+Run directory: runs\20260321T210518_evaluate_inverse_opening_holdout
+Manifest: runs\20260321T210518_evaluate_inverse_opening_holdout\run_manifest.json
+
+========================================================================
+Inverse evaluation: leave-one-opening-out 7-fold CV
+========================================================================
+
+------------------------------------------------------------------------
+Fold 1/7 | test opening = 20 mm | train/val openings = 25,30,35,40,45,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=1e-05, mean val R2=0.999337
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 1/7 done.
+
+------------------------------------------------------------------------
+Fold 2/7 | test opening = 25 mm | train/val openings = 20,30,35,40,45,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=0.001, mean val R2=0.999277
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 2/7 done.
+
+------------------------------------------------------------------------
+Fold 3/7 | test opening = 30 mm | train/val openings = 20,25,35,40,45,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=0.001, mean val R2=0.999169
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 3/7 done.
+
+------------------------------------------------------------------------
+Fold 4/7 | test opening = 35 mm | train/val openings = 20,25,30,40,45,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=0.001, mean val R2=0.999018
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 4/7 done.
+
+------------------------------------------------------------------------
+Fold 5/7 | test opening = 40 mm | train/val openings = 20,25,30,35,45,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=1e-05, mean val R2=0.999210
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 5/7 done.
+
+------------------------------------------------------------------------
+Fold 6/7 | test opening = 45 mm | train/val openings = 20,25,30,35,40,50
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=1e-05, mean val R2=0.999216
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 6/7 done.
+
+------------------------------------------------------------------------
+Fold 7/7 | test opening = 50 mm | train/val openings = 20,25,30,35,40,45
+train=196, val=50, test=41
+------------------------------------------------------------------------
+
+=== 训练 反向 MLP（公平调参协议） ===
+反向 MLP 最优超参数：hidden_layer_sizes=(32, 32), alpha=1e-06, mean val R2=0.999527
+
+=== 训练 反向 GRNN（公平调参协议） ===
+
+=== 训练 反向 KAN（公平调参协议） ===
+使用设备: cuda
+Fold 7/7 done.
+Completed 7 opening holdout folds.
+Saved fold metrics: runs\20260321T210518_evaluate_inverse_opening_holdout\inverse_opening_holdout_metrics.csv
+Saved summary metrics: runs\20260321T210518_evaluate_inverse_opening_holdout\inverse_opening_holdout_summary.csv
+Saved all predictions: runs\20260321T210518_evaluate_inverse_opening_holdout\inverse_opening_holdout_predictions_all.csv
+Saved main-scope predictions: runs\20260321T210518_evaluate_inverse_opening_holdout\inverse_opening_holdout_predictions_main.csv
+
+All outputs saved to:
+runs\20260321T210518_evaluate_inverse_opening_holdout

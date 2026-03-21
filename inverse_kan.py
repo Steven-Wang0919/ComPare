@@ -8,6 +8,7 @@ Inverse KAN with a shared fair tuning protocol.
 import json
 import os
 import random
+import gc
 
 import numpy as np
 import pandas as pd
@@ -39,6 +40,36 @@ EPS = 1e-8
 DEFAULT_HIDDEN_DIM_CANDIDATES = [8, 16, 32, 64]
 DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
 DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
+
+
+def _cleanup_torch_runtime(*, model=None, tensors=None, device=None):
+    tensors = list(tensors or [])
+    for tensor in tensors:
+        try:
+            del tensor
+        except Exception:
+            pass
+    if model is not None:
+        try:
+            model.to("cpu")
+        except Exception:
+            pass
+    gc.collect()
+    device_name = str(device or "")
+    if torch.cuda.is_available() and device_name.startswith("cuda"):
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        if hasattr(torch.cuda, "ipc_collect"):
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
 
 
 def set_seed(seed=42):
@@ -280,6 +311,7 @@ def _fit_predict_inverse_kan(
     epochs,
     device,
     seed,
+    return_model=False,
 ):
     arrays = _prepare_inverse_arrays(X_train_raw, y_train_raw, X_eval_raw)
     model = _train_inverse_kan_model(
@@ -294,11 +326,15 @@ def _fit_predict_inverse_kan(
     )
 
     model.eval()
+    X_eval_t = None
     with torch.no_grad():
         X_eval_t = torch.tensor(arrays["X_eval"], dtype=torch.float32, device=device)
         pred_eval_norm = model(X_eval_t).cpu().numpy().reshape(-1)
 
     y_pred_eval = arrays["denorm_y"](pred_eval_norm)
+    if not return_model:
+        _cleanup_torch_runtime(model=model, tensors=[X_eval_t], device=device)
+        model = None
     return {
         "model": model,
         "y_pred_eval": y_pred_eval,
@@ -440,6 +476,7 @@ def train_and_eval_inverse_kan_v2(
             epochs=epochs,
             device=device,
             seed=int(tuning_config.seed) + repeat_idx,
+            return_model=False,
         )
         y_pred_val = res["y_pred_eval"]
         y_true_val = y_dev_raw[idx_val]
@@ -469,6 +506,7 @@ def train_and_eval_inverse_kan_v2(
         epochs=epochs,
         device=device,
         seed=int(tuning_config.seed),
+        return_model=save_artifacts,
     )
     model_final = final_fit["model"]
     pred_test_speed = final_fit["y_pred_eval"]
@@ -562,6 +600,8 @@ def train_and_eval_inverse_kan_v2(
             idx_val=idx_val,
             idx_te=idx_te,
         )
+
+    _cleanup_torch_runtime(model=model_final, device=device)
 
     return {
         "r2_main": float(r2_main) if not np.isnan(r2_main) else np.nan,

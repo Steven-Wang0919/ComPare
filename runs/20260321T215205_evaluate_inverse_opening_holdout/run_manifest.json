@@ -1,0 +1,48 @@
+{
+  "script_name": "evaluate_inverse_opening_holdout.py",
+  "timestamp": "20260321T215205",
+  "run_dir": "runs/20260321T215205_evaluate_inverse_opening_holdout",
+  "data": {
+    "path": "data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "protocol": "leave_one_opening_out_cv",
+    "fold_openings_mm": [
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0
+    ],
+    "n_folds": 7,
+    "val_ratio": 0.2,
+    "threshold_low_mid": 2800.0,
+    "threshold_mid_high": 4800.0,
+    "note": "each fold holds out exactly one opening and evaluates all seven openings once",
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "outputs": [],
+  "extra": {}
+}

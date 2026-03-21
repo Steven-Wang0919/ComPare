@@ -1,0 +1,132 @@
+{
+  "script_name": "evaluate_generalization.py",
+  "timestamp": "20260321T190050",
+  "run_dir": "runs/20260321T190050_evaluate_generalization",
+  "data": {
+    "path": "data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "models": [
+      "MLP",
+      "GRNN",
+      "KAN"
+    ],
+    "protocols": {
+      "random_interp": {
+        "protocol": "random_stratified",
+        "description": "随机联合分层切分（规则网格内插值评估）"
+      },
+      "leave_opening_20_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=20.0",
+        "holdout_opening": 20.0,
+        "val_opening": null
+      },
+      "leave_opening_25_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=25.0",
+        "holdout_opening": 25.0,
+        "val_opening": null
+      },
+      "leave_opening_30_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=30.0",
+        "holdout_opening": 30.0,
+        "val_opening": null
+      },
+      "leave_opening_35_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=35.0",
+        "holdout_opening": 35.0,
+        "val_opening": null
+      },
+      "leave_opening_40_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=40.0",
+        "holdout_opening": 40.0,
+        "val_opening": null
+      },
+      "leave_opening_45_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=45.0",
+        "holdout_opening": 45.0,
+        "val_opening": null
+      },
+      "leave_opening_50_out": {
+        "protocol": "leave_one_opening_out",
+        "description": "留一开度层外推：test 开度=50.0",
+        "holdout_opening": 50.0,
+        "val_opening": null
+      },
+      "leave_speed_20_24_out": {
+        "protocol": "leave_speed_block_out",
+        "description": "留一速度段外推：test 速度∈[20, 24]",
+        "holdout_speed_min": 20.0,
+        "holdout_speed_max": 24.0,
+        "val_speed_min": null,
+        "val_speed_max": null
+      },
+      "leave_speed_38_42_out": {
+        "protocol": "leave_speed_block_out",
+        "description": "留一速度段外推：test 速度∈[38, 42]",
+        "holdout_speed_min": 38.0,
+        "holdout_speed_max": 42.0,
+        "val_speed_min": null,
+        "val_speed_max": null
+      },
+      "leave_speed_56_60_out": {
+        "protocol": "leave_speed_block_out",
+        "description": "留一速度段外推：test 速度∈[56, 60]",
+        "holdout_speed_min": 56.0,
+        "holdout_speed_max": 60.0,
+        "val_speed_min": null,
+        "val_speed_max": null
+      }
+    },
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "outputs": [
+    {
+      "path": "protocol_metrics.csv"
+    },
+    {
+      "path": "protocol_predictions.csv"
+    },
+    {
+      "path": "protocol_summary.csv"
+    },
+    {
+      "path": "protocol_family_summary.csv"
+    },
+    {
+      "path": "opening_cv_summary.csv"
+    },
+    {
+      "path": "speed_cv_summary.csv"
+    },
+    {
+      "path": "protocol_tuning_audit.csv"
+    }
+  ],
+  "extra": {}
+}

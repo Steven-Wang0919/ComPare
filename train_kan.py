@@ -8,6 +8,7 @@ Forward KAN with a shared fair tuning protocol.
 import json
 import os
 import random
+import gc
 
 import numpy as np
 import pandas as pd
@@ -38,6 +39,36 @@ EPS = 1e-8
 DEFAULT_HIDDEN_DIM_CANDIDATES = [4, 8, 16, 32]
 DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
 DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
+
+
+def _cleanup_torch_runtime(*, model=None, tensors=None, device=None):
+    tensors = list(tensors or [])
+    for tensor in tensors:
+        try:
+            del tensor
+        except Exception:
+            pass
+    if model is not None:
+        try:
+            model.to("cpu")
+        except Exception:
+            pass
+    gc.collect()
+    device_name = str(device or "")
+    if torch.cuda.is_available() and device_name.startswith("cuda"):
+        try:
+            torch.cuda.synchronize()
+        except Exception:
+            pass
+        try:
+            torch.cuda.empty_cache()
+        except Exception:
+            pass
+        if hasattr(torch.cuda, "ipc_collect"):
+            try:
+                torch.cuda.ipc_collect()
+            except Exception:
+                pass
 
 
 def set_seed(seed=42):
@@ -248,6 +279,7 @@ def _fit_predict_forward_kan(
     gamma,
     device,
     seed,
+    return_model=False,
 ):
     arrays = _prepare_forward_arrays(X_train_raw, y_train_raw, X_eval_raw)
     model = _train_forward_kan_model(
@@ -262,11 +294,15 @@ def _fit_predict_forward_kan(
         seed=seed,
     )
     model.eval()
+    X_eval_t = None
     with torch.no_grad():
         X_eval_t = torch.tensor(arrays["X_eval"], dtype=torch.float32).to(device)
         pred_eval_norm = model(X_eval_t).cpu().numpy().reshape(-1)
 
     y_pred_eval = arrays["denorm_y"](pred_eval_norm)
+    if not return_model:
+        _cleanup_torch_runtime(model=model, tensors=[X_eval_t], device=device)
+        model = None
     return {
         "model": model,
         "y_pred_eval": y_pred_eval,
@@ -411,6 +447,7 @@ def train_and_eval_kan(
             gamma=gamma,
             device=device,
             seed=int(tuning_config.seed) + repeat_idx,
+            return_model=False,
         )
         y_pred_val = res["y_pred_eval"]
         y_true_val = y_dev_raw[idx_val]
@@ -441,6 +478,7 @@ def train_and_eval_kan(
         gamma=gamma,
         device=device,
         seed=int(tuning_config.seed),
+        return_model=save_artifacts,
     )
     model_final = final_fit["model"]
     y_pred_kan = final_fit["y_pred_eval"]
@@ -504,6 +542,8 @@ def train_and_eval_kan(
             idx_te=idx_te,
         )
         print(f"KAN 工件已保存：{artifact_dir}")
+
+    _cleanup_torch_runtime(model=model_final, device=device)
 
     return {
         "r2": kan_r2,
