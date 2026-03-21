@@ -2,10 +2,7 @@
 """
 train_kan.py
 
-正向 KAN：
-- 默认不再写仓库根目录 results_kan.csv
-- 默认不再写顶层 path/
-- 独立运行时输出到 runs/<timestamp>_train_kan/
+Forward KAN with a shared fair tuning protocol.
 """
 
 import json
@@ -21,15 +18,26 @@ import torch.optim as optim
 from sklearn.metrics import r2_score
 
 from common_utils import (
-    load_data,
-    get_train_val_test_indices,
     average_relative_error,
+    combine_train_val_indices,
+    get_train_val_test_indices,
+    load_data,
     validate_predefined_split_indices,
+)
+from fair_tuning import (
+    build_inner_repeated_splits,
+    ensure_fair_tuning_config,
+    infer_inner_val_ratio,
+    run_fair_tuning,
+    tuning_config_to_dict,
 )
 from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
 
 
 EPS = 1e-8
+DEFAULT_HIDDEN_DIM_CANDIDATES = [4, 8, 16, 32]
+DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
+DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
 
 
 def set_seed(seed=42):
@@ -150,6 +158,127 @@ class FertilizerKAN(nn.Module):
         return x
 
 
+def _build_candidate_configs(
+    hidden_dim_candidates=None,
+    lr_candidates=None,
+    weight_decay_candidates=None,
+):
+    hidden_dim_candidates = hidden_dim_candidates or DEFAULT_HIDDEN_DIM_CANDIDATES
+    lr_candidates = lr_candidates or DEFAULT_LR_CANDIDATES
+    weight_decay_candidates = weight_decay_candidates or DEFAULT_WEIGHT_DECAY_CANDIDATES
+    return [
+        {
+            "hidden_dim": int(hidden_dim),
+            "lr": float(lr),
+            "weight_decay": float(weight_decay),
+        }
+        for hidden_dim in hidden_dim_candidates
+        for lr in lr_candidates
+        for weight_decay in weight_decay_candidates
+    ]
+
+
+def _prepare_forward_arrays(X_train_raw, y_train_raw, X_eval_raw):
+    X_min = X_train_raw.min(axis=0, keepdims=True)
+    X_max = X_train_raw.max(axis=0, keepdims=True)
+    y_min = y_train_raw.min(keepdims=True)
+    y_max = y_train_raw.max(keepdims=True)
+
+    def norm_x(x):
+        return (x - X_min) / (X_max - X_min + EPS)
+
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min) + y_min
+
+    arrays = {
+        "X_train": norm_x(X_train_raw),
+        "X_eval": norm_x(X_eval_raw),
+        "y_train": (y_train_raw - y_min) / (y_max - y_min + EPS),
+        "X_min": X_min,
+        "X_max": X_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+    arrays["denorm_y"] = denorm_y
+    return arrays
+
+
+def _train_forward_kan_model(
+    X_train_np,
+    y_train_np,
+    *,
+    hidden_dim,
+    lr,
+    weight_decay,
+    epochs,
+    gamma,
+    device,
+    seed,
+):
+    set_seed(seed)
+    model = FertilizerKAN(input_dim=2, hidden_dim=hidden_dim, output_dim=1).to(device)
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    criterion = nn.MSELoss()
+
+    X_train_t = torch.tensor(X_train_np, dtype=torch.float32).to(device)
+    y_train_t = torch.tensor(y_train_np, dtype=torch.float32).view(-1, 1).to(device)
+
+    for _ in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        pred_train_norm = model(X_train_t)
+        loss = criterion(pred_train_norm, y_train_t)
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+    return model
+
+
+def _fit_predict_forward_kan(
+    X_train_raw,
+    y_train_raw,
+    X_eval_raw,
+    *,
+    hidden_dim,
+    lr,
+    weight_decay,
+    epochs,
+    gamma,
+    device,
+    seed,
+):
+    arrays = _prepare_forward_arrays(X_train_raw, y_train_raw, X_eval_raw)
+    model = _train_forward_kan_model(
+        arrays["X_train"],
+        arrays["y_train"],
+        hidden_dim=hidden_dim,
+        lr=lr,
+        weight_decay=weight_decay,
+        epochs=epochs,
+        gamma=gamma,
+        device=device,
+        seed=seed,
+    )
+    model.eval()
+    with torch.no_grad():
+        X_eval_t = torch.tensor(arrays["X_eval"], dtype=torch.float32).to(device)
+        pred_eval_norm = model(X_eval_t).cpu().numpy().reshape(-1)
+
+    y_pred_eval = arrays["denorm_y"](pred_eval_norm)
+    return {
+        "model": model,
+        "y_pred_eval": y_pred_eval,
+        "norm_stats": {
+            "X_min": arrays["X_min"],
+            "X_max": arrays["X_max"],
+            "y_min": arrays["y_min"],
+            "y_max": arrays["y_max"],
+        },
+    }
+
+
 def save_forward_artifacts(
     model,
     model_path,
@@ -234,139 +363,100 @@ def train_and_eval_kan(
     weight_filename="kan_forward.pth",
     meta_filename="kan_forward_meta.json",
     split_indices=None,
+    tuning_config=None,
+    save_tuning_records_path=None,
 ):
-    set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    print("\n=== 训练 KAN ===")
+    print("\n=== 训练 KAN（公平调参协议） ===")
     print("Using:", device)
     print("Random seed:", seed)
 
-    if hidden_dim_candidates is None:
-        hidden_dim_candidates = [4, 8, 16]
-    if lr_candidates is None:
-        lr_candidates = [0.01, 0.005]
-    if weight_decay_candidates is None:
-        weight_decay_candidates = [1e-4, 1e-5]
-
     X, y = load_data(data_path)
     if split_indices is None:
-        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y)
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y, random_state=seed)
     else:
         idx_tr, idx_val, idx_te = validate_predefined_split_indices(
             len(X), split_indices[0], split_indices[1], split_indices[2]
         )
 
-    X_train_raw, y_train_raw = X[idx_tr], y[idx_tr]
-    X_val_raw, y_val_raw = X[idx_val], y[idx_val]
-    X_test_raw, y_test_raw = X[idx_te], y[idx_te]
-
-    X_min = X_train_raw.min(axis=0, keepdims=True)
-    X_max = X_train_raw.max(axis=0, keepdims=True)
-
-    def norm_x(x):
-        return (x - X_min) / (X_max - X_min + EPS)
-
-    X_train_np = norm_x(X_train_raw)
-    X_val_np = norm_x(X_val_raw)
-    X_test_np = norm_x(X_test_raw)
-
-    y_min = y_train_raw.min(keepdims=True)
-    y_max = y_train_raw.max(keepdims=True)
-
-    y_train_np = (y_train_raw - y_min) / (y_max - y_min + EPS)
-    y_val_np = (y_val_raw - y_min) / (y_max - y_min + EPS)
-
-    X_train_t = torch.tensor(X_train_np, dtype=torch.float32).to(device)
-    X_val_t = torch.tensor(X_val_np, dtype=torch.float32).to(device)
-    X_test_t = torch.tensor(X_test_np, dtype=torch.float32).to(device)
-    y_train_t = torch.tensor(y_train_np, dtype=torch.float32).view(-1, 1).to(device)
-    y_val_t = torch.tensor(y_val_np, dtype=torch.float32).view(-1, 1).to(device)
-
-    criterion = nn.MSELoss()
-    best_r2_val = -np.inf
-    best_cfg = None
-
-    for hidden_dim in hidden_dim_candidates:
-        for lr in lr_candidates:
-            for wd in weight_decay_candidates:
-                set_seed(seed)
-
-                model = FertilizerKAN(
-                    input_dim=2,
-                    hidden_dim=hidden_dim,
-                    output_dim=1,
-                ).to(device)
-
-                optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=wd)
-                scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-
-                for _ in range(search_epochs):
-                    model.train()
-                    optimizer.zero_grad()
-                    pred_train_norm = model(X_train_t)
-                    loss = criterion(pred_train_norm, y_train_t)
-                    loss.backward()
-                    optimizer.step()
-                    scheduler.step()
-
-                model.eval()
-                with torch.no_grad():
-                    pred_val_norm = model(X_val_t).cpu().numpy().reshape(-1)
-
-                y_pred_val = pred_val_norm * (y_max - y_min) + y_min
-                r2_val = r2_score(y_val_raw, y_pred_val)
-
-                if r2_val > best_r2_val:
-                    best_r2_val = r2_val
-                    best_cfg = (hidden_dim, lr, wd)
-
-    if best_cfg is None:
-        raise RuntimeError("KAN 超参数搜索失败，未找到有效配置。")
-
-    hidden_dim_best, lr_best, wd_best = best_cfg
-
-    print(
-        f"KAN 最优超参数：hidden_dim={hidden_dim_best}, "
-        f"lr={lr_best}, weight_decay={wd_best}, val R²={best_r2_val:.6f}"
+    inner_val_ratio = infer_inner_val_ratio(idx_tr, idx_val)
+    tuning_config = ensure_fair_tuning_config(
+        tuning_config,
+        seed=seed,
+        inner_val_ratio=inner_val_ratio,
     )
 
-    X_train_val_t = torch.cat([X_train_t, X_val_t], dim=0)
-    y_train_val_t = torch.cat([y_train_t, y_val_t], dim=0)
+    dev_idx = combine_train_val_indices(idx_tr, idx_val)
+    X_dev_raw = X[dev_idx]
+    y_dev_raw = y[dev_idx]
+    X_test_raw = X[idx_te]
+    y_test_raw = y[idx_te]
 
-    set_seed(seed)
-    model_final = FertilizerKAN(
-        input_dim=2,
-        hidden_dim=hidden_dim_best,
-        output_dim=1,
-    ).to(device)
+    inner_splits = build_inner_repeated_splits(X_dev_raw, y_dev_raw, tuning_config)
+    candidate_configs = _build_candidate_configs(
+        hidden_dim_candidates,
+        lr_candidates,
+        weight_decay_candidates,
+    )
 
-    optimizer = optim.AdamW(model_final.parameters(), lr=lr_best, weight_decay=wd_best)
-    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+    def eval_candidate_fn(*, config, idx_train, idx_val, repeat_idx):
+        res = _fit_predict_forward_kan(
+            X_dev_raw[idx_train],
+            y_dev_raw[idx_train],
+            X_dev_raw[idx_val],
+            hidden_dim=config["hidden_dim"],
+            lr=config["lr"],
+            weight_decay=config["weight_decay"],
+            epochs=search_epochs,
+            gamma=gamma,
+            device=device,
+            seed=int(tuning_config.seed) + repeat_idx,
+        )
+        y_pred_val = res["y_pred_eval"]
+        y_true_val = y_dev_raw[idx_val]
+        return {
+            "val_r2": float(r2_score(y_true_val, y_pred_val)),
+            "val_are": float(average_relative_error(y_true_val, y_pred_val)),
+        }
 
-    print("开始训练 KAN 最终模型 ...")
-    for epoch in range(epochs):
-        model_final.train()
-        optimizer.zero_grad()
-        pred_train_norm = model_final(X_train_val_t)
-        loss = criterion(pred_train_norm, y_train_val_t)
-        loss.backward()
-        optimizer.step()
-        scheduler.step()
+    tuning_result = run_fair_tuning(
+        candidate_configs=candidate_configs,
+        inner_splits=inner_splits,
+        eval_candidate_fn=eval_candidate_fn,
+        tuning_config=tuning_config,
+        model_name="KAN",
+        task_name="forward",
+    )
+    best_config = tuning_result["best_config"]
+    best_summary = tuning_result["candidate_summaries"][tuning_result["best_candidate_idx"]]
 
-        if (epoch + 1) % 50 == 0:
-            print(f"Epoch {epoch + 1}, Loss={loss.item():.6f}")
+    final_fit = _fit_predict_forward_kan(
+        X_dev_raw,
+        y_dev_raw,
+        X_test_raw,
+        hidden_dim=best_config["hidden_dim"],
+        lr=best_config["lr"],
+        weight_decay=best_config["weight_decay"],
+        epochs=epochs,
+        gamma=gamma,
+        device=device,
+        seed=int(tuning_config.seed),
+    )
+    model_final = final_fit["model"]
+    y_pred_kan = final_fit["y_pred_eval"]
 
-    model_final.eval()
-    with torch.no_grad():
-        pred_test_norm = model_final(X_test_t).cpu().numpy().reshape(-1)
+    kan_r2 = float(r2_score(y_test_raw, y_pred_kan))
+    kan_are = float(average_relative_error(y_test_raw, y_pred_kan))
 
-    y_pred_kan = pred_test_norm * (y_max - y_min) + y_min
-    kan_r2 = r2_score(y_test_raw, y_pred_kan)
-    kan_are = average_relative_error(y_test_raw, y_pred_kan)
-
+    print(
+        "KAN 最优超参数："
+        f"hidden_dim={best_config['hidden_dim']}, "
+        f"lr={best_config['lr']}, "
+        f"weight_decay={best_config['weight_decay']}, "
+        f"mean val R2={best_summary['mean_val_r2']:.6f}"
+    )
     print("\n===== KAN 结果 =====")
-    print(f"R²  = {kan_r2:.6f}")
+    print(f"R2  = {kan_r2:.6f}")
     print(f"ARE = {kan_are:.6f} %")
 
     if save_csv_path is not None:
@@ -377,6 +467,10 @@ def train_and_eval_kan(
         save_dataframe(df_out, save_csv_path)
         print(f"预测文件已保存：{save_csv_path}")
 
+    if save_tuning_records_path is not None:
+        save_dataframe(pd.DataFrame(tuning_result["tuning_records"]), save_tuning_records_path)
+        print(f"调参审计文件已保存：{save_tuning_records_path}")
+
     model_path = None
     meta_path = None
     if save_artifacts:
@@ -385,26 +479,26 @@ def train_and_eval_kan(
         ensure_dir(artifact_dir)
         model_path = os.path.join(artifact_dir, weight_filename)
         meta_path = os.path.join(artifact_dir, meta_filename)
-
+        norm_stats = final_fit["norm_stats"]
         save_forward_artifacts(
             model_final,
             model_path=model_path,
             meta_path=meta_path,
             seed=seed,
             data_path=data_path,
-            hidden_dim=hidden_dim_best,
-            lr=lr_best,
-            weight_decay=wd_best,
+            hidden_dim=best_config["hidden_dim"],
+            lr=best_config["lr"],
+            weight_decay=best_config["weight_decay"],
             epochs=epochs,
             search_epochs=search_epochs,
             gamma=gamma,
-            best_val_r2=best_r2_val,
-            x_min=X_min,
-            x_max=X_max,
-            y_min=y_min,
-            y_max=y_max,
-            x_train_raw=X_train_raw,
-            y_train_raw=y_train_raw,
+            best_val_r2=best_summary["mean_val_r2"],
+            x_min=norm_stats["X_min"],
+            x_max=norm_stats["X_max"],
+            y_min=norm_stats["y_min"],
+            y_max=norm_stats["y_max"],
+            x_train_raw=X_dev_raw,
+            y_train_raw=y_dev_raw,
             idx_tr=idx_tr,
             idx_val=idx_val,
             idx_te=idx_te,
@@ -414,21 +508,34 @@ def train_and_eval_kan(
     return {
         "r2": kan_r2,
         "are": kan_are,
-        "best_hidden_dim": hidden_dim_best,
-        "best_lr": lr_best,
-        "best_weight_decay": wd_best,
+        "best_hidden_dim": int(best_config["hidden_dim"]),
+        "best_lr": float(best_config["lr"]),
+        "best_weight_decay": float(best_config["weight_decay"]),
+        "best_config": {
+            "hidden_dim": int(best_config["hidden_dim"]),
+            "lr": float(best_config["lr"]),
+            "weight_decay": float(best_config["weight_decay"]),
+        },
         "y_true": y_test_raw,
         "y_pred": y_pred_kan,
         "x_test_raw": X_test_raw,
         "seed": seed,
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,
+        "tuning_protocol": tuning_config_to_dict(tuning_config),
+        "trial_budget": int(tuning_config.n_candidates),
+        "validation_repeats": int(tuning_config.n_repeats),
+        "selection_metric": tuning_config.selection_metric,
+        "tie_break_metric": tuning_config.tie_break_metric,
+        "tuning_records": tuning_result["tuning_records"],
+        "candidate_summaries": tuning_result["candidate_summaries"],
     }
 
 
 def main():
     run_dir = create_run_dir("train_kan")
     output_csv = os.path.join(run_dir, "results_kan.csv")
+    tuning_csv = os.path.join(run_dir, "tuning_records_kan.csv")
     artifact_dir = os.path.join(run_dir, "artifacts")
 
     write_manifest(
@@ -437,12 +544,19 @@ def main():
         data_path="data/dataset.xlsx",
         seed=42,
         params={
-            "hidden_dim_candidates": [4, 8, 16],
-            "lr_candidates": [0.01, 0.005],
-            "weight_decay_candidates": [1e-4, 1e-5],
+            "hidden_dim_candidates": DEFAULT_HIDDEN_DIM_CANDIDATES,
+            "lr_candidates": DEFAULT_LR_CANDIDATES,
+            "weight_decay_candidates": DEFAULT_WEIGHT_DECAY_CANDIDATES,
             "epochs": 600,
             "search_epochs": 300,
             "gamma": 0.99,
+            "fair_tuning": {
+                "n_candidates": 24,
+                "n_repeats": 5,
+                "selection_metric": "mean_val_r2",
+                "tie_break_metric": "mean_val_are",
+                "budget_profile": "high",
+            },
         },
     )
 
@@ -451,9 +565,13 @@ def main():
         seed=42,
         save_artifacts=True,
         artifact_dir=artifact_dir,
+        save_tuning_records_path=tuning_csv,
     )
 
-    outputs = [{"path": "results_kan.csv"}]
+    outputs = [
+        {"path": "results_kan.csv"},
+        {"path": "tuning_records_kan.csv"},
+    ]
     if res["artifact_model_path"] is not None:
         outputs.append({"path": "artifacts/kan_forward.pth"})
     if res["artifact_meta_path"] is not None:

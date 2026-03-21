@@ -1,0 +1,66 @@
+{
+  "script_name": "compare_all.py",
+  "timestamp": "20260321T184004",
+  "run_dir": "runs/20260321T184004_compare_all",
+  "data": {
+    "path": "data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "forward_models": [
+      "MLP",
+      "GRNN",
+      "KAN"
+    ],
+    "inverse_models": [
+      "inverse_MLP",
+      "inverse_GRNN",
+      "inverse_KAN"
+    ],
+    "save_root": "runs",
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "outputs": [
+    {
+      "path": "forward_model_metrics.csv"
+    },
+    {
+      "path": "forward_model_predictions.csv"
+    },
+    {
+      "path": "forward_tuning_audit.csv"
+    },
+    {
+      "path": "inverse_model_metrics.csv"
+    },
+    {
+      "path": "inverse_model_predictions_all.csv"
+    },
+    {
+      "path": "inverse_model_predictions_main.csv"
+    },
+    {
+      "path": "inverse_tuning_audit.csv"
+    }
+  ],
+  "extra": {}
+}

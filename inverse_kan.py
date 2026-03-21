@@ -2,9 +2,7 @@
 """
 inverse_kan.py
 
-反向 KAN（结构修复版）
-- compare_all 调用时可 save_artifacts=False，避免污染仓库
-- 独立运行时统一输出到 runs/<timestamp>_inverse_kan/
+Inverse KAN with a shared fair tuning protocol.
 """
 
 import json
@@ -18,13 +16,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import r2_score
 
-from common_utils import load_data, get_train_val_test_indices, average_relative_error
+from common_utils import (
+    average_relative_error,
+    combine_train_val_indices,
+    get_train_val_test_indices,
+    load_data,
+    validate_predefined_split_indices,
+)
+from fair_tuning import (
+    build_inner_repeated_splits,
+    ensure_fair_tuning_config,
+    infer_inner_val_ratio,
+    run_fair_tuning,
+    tuning_config_to_dict,
+)
 from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
 
 
 THRESHOLD_LOW_MID = 2800.0
 THRESHOLD_MID_HIGH = 4800.0
 EPS = 1e-8
+DEFAULT_HIDDEN_DIM_CANDIDATES = [8, 16, 32, 64]
+DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
+DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
 
 
 def set_seed(seed=42):
@@ -42,10 +56,9 @@ def set_seed(seed=42):
 def select_optimal_opening(target_mass: float) -> float:
     if target_mass < THRESHOLD_LOW_MID:
         return 20.0
-    elif target_mass < THRESHOLD_MID_HIGH:
+    if target_mass < THRESHOLD_MID_HIGH:
         return 35.0
-    else:
-        return 50.0
+    return 50.0
 
 
 def _safe_r2(y_true, y_pred):
@@ -106,7 +119,6 @@ class KANLayer(nn.Module):
         self.spline_weight = nn.Parameter(
             torch.Tensor(out_features, in_features, grid_size + spline_order)
         )
-
         self.scale_noise = scale_noise
         self.scale_base = scale_base
         self.scale_spline = scale_spline
@@ -182,6 +194,123 @@ def _to_list(arr):
     return np.asarray(arr).tolist()
 
 
+def _build_candidate_configs(
+    hidden_dim_candidates=None,
+    lr_candidates=None,
+    weight_decay_candidates=None,
+):
+    hidden_dim_candidates = hidden_dim_candidates or DEFAULT_HIDDEN_DIM_CANDIDATES
+    lr_candidates = lr_candidates or DEFAULT_LR_CANDIDATES
+    weight_decay_candidates = weight_decay_candidates or DEFAULT_WEIGHT_DECAY_CANDIDATES
+    return [
+        {
+            "hidden_dim": int(hidden_dim),
+            "lr": float(lr),
+            "weight_decay": float(weight_decay),
+        }
+        for hidden_dim in hidden_dim_candidates
+        for lr in lr_candidates
+        for weight_decay in weight_decay_candidates
+    ]
+
+
+def _prepare_inverse_arrays(X_train_raw, y_train_raw, X_eval_raw):
+    x_min = X_train_raw.min(axis=0, keepdims=True)
+    x_max = X_train_raw.max(axis=0, keepdims=True)
+    y_min = float(y_train_raw.min())
+    y_max = float(y_train_raw.max())
+
+    def norm_x(x):
+        return (x - x_min) / (x_max - x_min + EPS)
+
+    def denorm_y(y_norm):
+        return y_norm * (y_max - y_min + EPS) + y_min
+
+    arrays = {
+        "X_train": norm_x(X_train_raw),
+        "X_eval": norm_x(X_eval_raw),
+        "y_train": (y_train_raw - y_min) / (y_max - y_min + EPS),
+        "x_min": x_min,
+        "x_max": x_max,
+        "y_min": y_min,
+        "y_max": y_max,
+    }
+    arrays["denorm_y"] = denorm_y
+    return arrays
+
+
+def _train_inverse_kan_model(
+    X_train,
+    y_train,
+    *,
+    hidden_dim,
+    lr,
+    weight_decay,
+    epochs,
+    device,
+    seed,
+):
+    set_seed(seed)
+    model = InverseKANModel(input_dim=2, hidden_dim=hidden_dim, output_dim=1).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    criterion = nn.MSELoss()
+
+    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
+    y_train_t = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32, device=device)
+
+    for _ in range(epochs):
+        model.train()
+        optimizer.zero_grad()
+        pred = model(X_train_t)
+        loss = criterion(pred, y_train_t)
+        loss.backward()
+        optimizer.step()
+
+    return model
+
+
+def _fit_predict_inverse_kan(
+    X_train_raw,
+    y_train_raw,
+    X_eval_raw,
+    *,
+    hidden_dim,
+    lr,
+    weight_decay,
+    epochs,
+    device,
+    seed,
+):
+    arrays = _prepare_inverse_arrays(X_train_raw, y_train_raw, X_eval_raw)
+    model = _train_inverse_kan_model(
+        arrays["X_train"],
+        arrays["y_train"],
+        hidden_dim=hidden_dim,
+        lr=lr,
+        weight_decay=weight_decay,
+        epochs=epochs,
+        device=device,
+        seed=seed,
+    )
+
+    model.eval()
+    with torch.no_grad():
+        X_eval_t = torch.tensor(arrays["X_eval"], dtype=torch.float32, device=device)
+        pred_eval_norm = model(X_eval_t).cpu().numpy().reshape(-1)
+
+    y_pred_eval = arrays["denorm_y"](pred_eval_norm)
+    return {
+        "model": model,
+        "y_pred_eval": y_pred_eval,
+        "norm_stats": {
+            "X_min": arrays["x_min"],
+            "X_max": arrays["x_max"],
+            "y_min": arrays["y_min"],
+            "y_max": arrays["y_max"],
+        },
+    }
+
+
 def save_inverse_artifacts(
     model,
     model_path,
@@ -246,87 +375,6 @@ def save_inverse_artifacts(
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
 
-def fit_one_inverse_kan(
-    X_train,
-    y_train,
-    X_val,
-    y_val_raw,
-    denorm_y,
-    hidden_dim=16,
-    lr=1e-3,
-    weight_decay=1e-5,
-    epochs=1000,
-    device="cpu",
-    seed=42,
-):
-    set_seed(seed)
-
-    model = InverseKANModel(input_dim=2, hidden_dim=hidden_dim, output_dim=1).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = nn.MSELoss()
-
-    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
-    y_train_t = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32, device=device)
-    X_val_t = torch.tensor(X_val, dtype=torch.float32, device=device)
-
-    best_state = None
-    best_val_r2 = -np.inf
-
-    for _ in range(epochs):
-        model.train()
-        optimizer.zero_grad()
-        pred = model(X_train_t)
-        loss = criterion(pred, y_train_t)
-        loss.backward()
-        optimizer.step()
-
-        model.eval()
-        with torch.no_grad():
-            val_pred_norm = model(X_val_t).cpu().numpy().reshape(-1)
-
-        val_pred_raw = denorm_y(val_pred_norm)
-        val_r2 = _safe_r2(y_val_raw, val_pred_raw)
-
-        if not np.isnan(val_r2) and val_r2 > best_val_r2:
-            best_val_r2 = val_r2
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-
-    if best_state is not None:
-        model.load_state_dict(best_state)
-
-    return model, best_val_r2
-
-
-def train_final_inverse_kan(
-    X_train,
-    y_train,
-    hidden_dim=16,
-    lr=1e-3,
-    weight_decay=1e-5,
-    epochs=1000,
-    device="cpu",
-    seed=42,
-):
-    set_seed(seed)
-
-    model = InverseKANModel(input_dim=2, hidden_dim=hidden_dim, output_dim=1).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
-    criterion = nn.MSELoss()
-
-    X_train_t = torch.tensor(X_train, dtype=torch.float32, device=device)
-    y_train_t = torch.tensor(y_train.reshape(-1, 1), dtype=torch.float32, device=device)
-
-    for _ in range(epochs):
-        model.train()
-        optimizer.zero_grad()
-        pred = model(X_train_t)
-        loss = criterion(pred, y_train_t)
-        loss.backward()
-        optimizer.step()
-
-    return model
-
-
 def train_and_eval_inverse_kan_v2(
     data_path="data/dataset.xlsx",
     hidden_dim_candidates=None,
@@ -340,119 +388,97 @@ def train_and_eval_inverse_kan_v2(
     weight_filename="kan_inverse.pth",
     meta_filename="kan_inverse_meta.json",
     save_outputs_dir=None,
+    split_indices=None,
+    tuning_config=None,
+    save_tuning_records_path=None,
 ):
-    if hidden_dim_candidates is None:
-        hidden_dim_candidates = [8, 16, 32]
-    if lr_candidates is None:
-        lr_candidates = [1e-2, 5e-3, 1e-3]
-    if weight_decay_candidates is None:
-        weight_decay_candidates = [0.0, 1e-6, 1e-5, 1e-4]
-
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    print("\n=== 训练 反向 KAN（结构修复 + train-only normalization） ===")
+    print("\n=== 训练 反向 KAN（公平调参协议） ===")
     print(f"使用设备: {device}")
 
     X_raw, y_raw = load_data(data_path)
-    idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw)
+    if split_indices is None:
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw, random_state=seed)
+    else:
+        idx_tr, idx_val, idx_te = validate_predefined_split_indices(
+            len(X_raw), split_indices[0], split_indices[1], split_indices[2]
+        )
+
+    inner_val_ratio = infer_inner_val_ratio(idx_tr, idx_val)
+    tuning_config = ensure_fair_tuning_config(
+        tuning_config,
+        seed=seed,
+        inner_val_ratio=inner_val_ratio,
+    )
 
     X_inv_all = np.stack([y_raw, X_raw[:, 0]], axis=1)
     y_inv_all = X_raw[:, 1]
 
-    X_train_raw = X_inv_all[idx_tr]
-    X_val_raw = X_inv_all[idx_val]
+    dev_idx = combine_train_val_indices(idx_tr, idx_val)
+    X_dev_raw = X_inv_all[dev_idx]
+    y_dev_raw = y_inv_all[dev_idx]
     X_test_raw = X_inv_all[idx_te]
+    y_test_speed_true = y_inv_all[idx_te]
 
-    y_train_raw = y_inv_all[idx_tr]
-    y_val_raw = y_inv_all[idx_val]
-
-    x_min = X_train_raw.min(axis=0, keepdims=True)
-    x_max = X_train_raw.max(axis=0, keepdims=True)
-    y_min = float(y_train_raw.min())
-    y_max = float(y_train_raw.max())
-
-    def norm_x(x):
-        return (x - x_min) / (x_max - x_min + EPS)
-
-    def norm_y(y):
-        return (y - y_min) / (y_max - y_min + EPS)
-
-    def denorm_y(y_norm):
-        return y_norm * (y_max - y_min + EPS) + y_min
-
-    X_train = norm_x(X_train_raw)
-    X_val = norm_x(X_val_raw)
-    X_test = norm_x(X_test_raw)
-    y_train = norm_y(y_train_raw)
-
-    best_val_r2 = -np.inf
-    best_hidden_dim = None
-    best_lr = None
-    best_weight_decay = None
-
-    for hidden_dim in hidden_dim_candidates:
-        for lr in lr_candidates:
-            for wd in weight_decay_candidates:
-                _, val_r2 = fit_one_inverse_kan(
-                    X_train=X_train,
-                    y_train=y_train,
-                    X_val=X_val,
-                    y_val_raw=y_val_raw,
-                    denorm_y=denorm_y,
-                    hidden_dim=hidden_dim,
-                    lr=lr,
-                    weight_decay=wd,
-                    epochs=epochs,
-                    device=device,
-                    seed=seed,
-                )
-
-                if val_r2 > best_val_r2:
-                    best_val_r2 = val_r2
-                    best_hidden_dim = int(hidden_dim)
-                    best_lr = float(lr)
-                    best_weight_decay = float(wd)
-
-    if best_hidden_dim is None:
-        raise RuntimeError("反向 KAN 超参数搜索失败：最优参数为空")
-
-    print(
-        f"反向 KAN 最优超参数：hidden_dim={best_hidden_dim}, "
-        f"lr={best_lr}, weight_decay={best_weight_decay}, val R²={best_val_r2:.6f}"
+    inner_splits = build_inner_repeated_splits(X_dev_raw, y_dev_raw, tuning_config)
+    candidate_configs = _build_candidate_configs(
+        hidden_dim_candidates,
+        lr_candidates,
+        weight_decay_candidates,
     )
 
-    X_train_val_raw = np.vstack([X_train_raw, X_val_raw])
-    y_train_val_raw = np.hstack([y_train_raw, y_val_raw])
+    def eval_candidate_fn(*, config, idx_train, idx_val, repeat_idx):
+        res = _fit_predict_inverse_kan(
+            X_dev_raw[idx_train],
+            y_dev_raw[idx_train],
+            X_dev_raw[idx_val],
+            hidden_dim=config["hidden_dim"],
+            lr=config["lr"],
+            weight_decay=config["weight_decay"],
+            epochs=epochs,
+            device=device,
+            seed=int(tuning_config.seed) + repeat_idx,
+        )
+        y_pred_val = res["y_pred_eval"]
+        y_true_val = y_dev_raw[idx_val]
+        return {
+            "val_r2": float(r2_score(y_true_val, y_pred_val)),
+            "val_are": float(average_relative_error(y_true_val, y_pred_val)),
+        }
 
-    X_train_val = norm_x(X_train_val_raw)
-    y_train_val = norm_y(y_train_val_raw)
+    tuning_result = run_fair_tuning(
+        candidate_configs=candidate_configs,
+        inner_splits=inner_splits,
+        eval_candidate_fn=eval_candidate_fn,
+        tuning_config=tuning_config,
+        model_name="inverse_KAN",
+        task_name="inverse",
+    )
+    best_config = tuning_result["best_config"]
+    best_summary = tuning_result["candidate_summaries"][tuning_result["best_candidate_idx"]]
 
-    model_final = train_final_inverse_kan(
-        X_train=X_train_val,
-        y_train=y_train_val,
-        hidden_dim=best_hidden_dim,
-        lr=best_lr,
-        weight_decay=best_weight_decay,
+    final_fit = _fit_predict_inverse_kan(
+        X_dev_raw,
+        y_dev_raw,
+        X_test_raw,
+        hidden_dim=best_config["hidden_dim"],
+        lr=best_config["lr"],
+        weight_decay=best_config["weight_decay"],
         epochs=epochs,
         device=device,
-        seed=seed,
+        seed=int(tuning_config.seed),
     )
+    model_final = final_fit["model"]
+    pred_test_speed = final_fit["y_pred_eval"]
 
     test_mass = y_raw[idx_te]
     test_opening = X_raw[idx_te, 0]
-    test_speed_true = X_raw[idx_te, 1]
 
-    model_final.eval()
-    with torch.no_grad():
-        X_test_t = torch.tensor(X_test, dtype=torch.float32, device=device)
-        pred_test_norm = model_final(X_test_t).cpu().numpy().reshape(-1)
-
-    pred_test_speed = denorm_y(pred_test_norm)
-
-    r2_all = _safe_r2(test_speed_true, pred_test_speed)
-    are_all = _safe_are(test_speed_true, pred_test_speed)
-    n_all = int(len(test_speed_true))
+    r2_all = _safe_r2(y_test_speed_true, pred_test_speed)
+    are_all = _safe_are(y_test_speed_true, pred_test_speed)
+    n_all = int(len(y_test_speed_true))
 
     strategy_opening_all = np.array(
         [select_optimal_opening(float(m)) for m in test_mass],
@@ -467,7 +493,7 @@ def train_and_eval_inverse_kan_v2(
         mass_main = test_mass[policy_mask]
         opening_main = test_opening[policy_mask]
         strategy_opening_main = strategy_opening_all[policy_mask]
-        y_true_main = test_speed_true[policy_mask]
+        y_true_main = y_test_speed_true[policy_mask]
         y_pred_main = pred_test_speed[policy_mask]
         r2_main = _safe_r2(y_true_main, y_pred_main)
         are_main = _safe_are(y_true_main, y_pred_main)
@@ -488,7 +514,7 @@ def train_and_eval_inverse_kan_v2(
             "target_mass_g_min": test_mass,
             "actual_opening_mm": test_opening,
             "strategy_opening_mm": strategy_opening_all,
-            "true_speed_r_min": test_speed_true,
+            "true_speed_r_min": y_test_speed_true,
             "inverse_KAN_pred": pred_test_speed,
             "policy_match": policy_mask.astype(int),
         })
@@ -503,6 +529,9 @@ def train_and_eval_inverse_kan_v2(
         })
         save_dataframe(df_main, os.path.join(save_outputs_dir, "inverse_kan_predictions_main.csv"))
 
+    if save_tuning_records_path is not None:
+        save_dataframe(pd.DataFrame(tuning_result["tuning_records"]), save_tuning_records_path)
+
     model_path = None
     meta_path = None
     if save_artifacts:
@@ -511,24 +540,24 @@ def train_and_eval_inverse_kan_v2(
         ensure_dir(artifact_dir)
         model_path = os.path.join(artifact_dir, weight_filename)
         meta_path = os.path.join(artifact_dir, meta_filename)
-
+        norm_stats = final_fit["norm_stats"]
         save_inverse_artifacts(
             model_final,
             model_path=model_path,
             meta_path=meta_path,
             seed=seed,
             data_path=data_path,
-            hidden_dim=best_hidden_dim,
-            lr=best_lr,
-            weight_decay=best_weight_decay,
+            hidden_dim=best_config["hidden_dim"],
+            lr=best_config["lr"],
+            weight_decay=best_config["weight_decay"],
             epochs=epochs,
-            best_val_r2=best_val_r2,
-            x_min=x_min,
-            x_max=x_max,
-            y_min=y_min,
-            y_max=y_max,
-            x_train_domain_raw=X_train_raw,
-            y_train_domain_raw=y_train_raw,
+            best_val_r2=best_summary["mean_val_r2"],
+            x_min=norm_stats["X_min"],
+            x_max=norm_stats["X_max"],
+            y_min=norm_stats["y_min"],
+            y_max=norm_stats["y_max"],
+            x_train_domain_raw=X_dev_raw,
+            y_train_domain_raw=y_dev_raw,
             idx_tr=idx_tr,
             idx_val=idx_val,
             idx_te=idx_te,
@@ -542,10 +571,15 @@ def train_and_eval_inverse_kan_v2(
         "r2_all": float(r2_all) if not np.isnan(r2_all) else np.nan,
         "are_all": float(are_all) if not np.isnan(are_all) else np.nan,
         "n_all": n_all,
-        "best_hidden_dim": int(best_hidden_dim),
-        "best_lr": float(best_lr),
-        "best_weight_decay": float(best_weight_decay),
-        "y_true_all": np.asarray(test_speed_true),
+        "best_hidden_dim": int(best_config["hidden_dim"]),
+        "best_lr": float(best_config["lr"]),
+        "best_weight_decay": float(best_config["weight_decay"]),
+        "best_config": {
+            "hidden_dim": int(best_config["hidden_dim"]),
+            "lr": float(best_config["lr"]),
+            "weight_decay": float(best_config["weight_decay"]),
+        },
+        "y_true_all": np.asarray(y_test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
         "opening_all": np.asarray(test_opening),
@@ -560,12 +594,21 @@ def train_and_eval_inverse_kan_v2(
         "opening_dist_main": opening_dist_main,
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,
+        "tuning_protocol": tuning_config_to_dict(tuning_config),
+        "trial_budget": int(tuning_config.n_candidates),
+        "validation_repeats": int(tuning_config.n_repeats),
+        "selection_metric": tuning_config.selection_metric,
+        "tie_break_metric": tuning_config.tie_break_metric,
+        "tuning_records": tuning_result["tuning_records"],
+        "candidate_summaries": tuning_result["candidate_summaries"],
+        "norm_stats": final_fit["norm_stats"],
     }
 
 
 def main():
     run_dir = create_run_dir("inverse_kan")
     artifact_dir = os.path.join(run_dir, "artifacts")
+    tuning_csv = os.path.join(run_dir, "tuning_records_inverse_kan.csv")
 
     write_manifest(
         run_dir,
@@ -573,10 +616,17 @@ def main():
         data_path="data/dataset.xlsx",
         seed=42,
         params={
-            "hidden_dim_candidates": [8, 16, 32],
-            "lr_candidates": [1e-2, 5e-3, 1e-3],
-            "weight_decay_candidates": [0.0, 1e-6, 1e-5, 1e-4],
+            "hidden_dim_candidates": DEFAULT_HIDDEN_DIM_CANDIDATES,
+            "lr_candidates": DEFAULT_LR_CANDIDATES,
+            "weight_decay_candidates": DEFAULT_WEIGHT_DECAY_CANDIDATES,
             "epochs": 1000,
+            "fair_tuning": {
+                "n_candidates": 24,
+                "n_repeats": 5,
+                "selection_metric": "mean_val_r2",
+                "tie_break_metric": "mean_val_are",
+                "budget_profile": "high",
+            },
         },
     )
 
@@ -585,11 +635,13 @@ def main():
         save_outputs_dir=run_dir,
         save_artifacts=True,
         artifact_dir=artifact_dir,
+        save_tuning_records_path=tuning_csv,
     )
 
     outputs = [
         {"path": "inverse_kan_predictions_all.csv"},
         {"path": "inverse_kan_predictions_main.csv"},
+        {"path": "tuning_records_inverse_kan.csv"},
     ]
     if res["artifact_model_path"] is not None:
         outputs.append({"path": "artifacts/kan_inverse.pth"})

@@ -13,6 +13,8 @@ from sklearn.model_selection import train_test_split
 
 
 EPS = 1e-8
+DEFAULT_TARGET_OPENINGS = (20.0, 35.0, 50.0)
+DEFAULT_OPENING_ATOL = 0.1
 
 
 def average_relative_error(y_true, y_pred, eps=EPS):
@@ -236,6 +238,56 @@ def make_split_from_masks(train_mask, val_mask, test_mask):
         np.where(val_mask)[0],
         np.where(test_mask)[0],
     )
+
+
+def combine_train_val_indices(idx_train, idx_val):
+    idx_train = np.asarray(idx_train, dtype=int).reshape(-1)
+    idx_val = np.asarray(idx_val, dtype=int).reshape(-1)
+    if idx_train.size == 0 or idx_val.size == 0:
+        raise ValueError("train and val indices must both be non-empty")
+    merged = np.concatenate([idx_train, idx_val])
+    if len(np.unique(merged)) != len(merged):
+        raise ValueError("train and val indices overlap")
+    return np.sort(merged)
+
+
+def is_target_opening(openings, target_openings=DEFAULT_TARGET_OPENINGS, atol=DEFAULT_OPENING_ATOL):
+    openings = np.asarray(openings, dtype=float).reshape(-1)
+    mask = np.zeros(len(openings), dtype=bool)
+    for op in target_openings:
+        mask |= np.isclose(openings, op, atol=atol)
+    return mask
+
+
+def build_opening_holdout_indices(
+    X,
+    y,
+    random_state=42,
+    val_ratio=0.2,
+    target_openings=DEFAULT_TARGET_OPENINGS,
+    atol=DEFAULT_OPENING_ATOL,
+):
+    opening = np.asarray(X[:, 0], dtype=float).reshape(-1)
+    test_mask = is_target_opening(opening, target_openings=target_openings, atol=atol)
+    idx_test = np.where(test_mask)[0]
+    idx_train_val = np.where(~test_mask)[0]
+
+    if len(idx_test) == 0:
+        raise ValueError("No target opening samples found for opening holdout protocol.")
+    if len(idx_train_val) < 2:
+        raise ValueError("Too few non-target-opening samples to form train/val splits.")
+
+    idx_train_sub, idx_val_sub, _ = get_train_val_test_indices(
+        X=np.asarray(X)[idx_train_val],
+        y=np.asarray(y).reshape(-1)[idx_train_val],
+        test_size=0.0,
+        val_size=val_ratio,
+        random_state=random_state,
+        use_stratify=True,
+    )
+    idx_train = idx_train_val[idx_train_sub]
+    idx_val = idx_train_val[idx_val_sub]
+    return validate_predefined_split_indices(len(X), idx_train, idx_val, idx_test)
 
 
 def build_protocol_splits(

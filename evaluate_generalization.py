@@ -1,25 +1,12 @@
 # -*- coding: utf-8 -*-
 """
-补充“插值 vs 外推”验证：
-1) 随机联合分层切分（网格内插值）
-2) 留一开度层外推（7 折）
-3) 留一速度段外推（3 折：低速 / 中速 / 高速）
+evaluate_generalization.py
 
-仅比较三种数据驱动模型：
-- MLP
-- GRNN
-- KAN
-
-输出：
-- protocol_metrics.csv
-- protocol_predictions.csv
-- protocol_summary.csv
-- protocol_family_summary.csv
-- opening_cv_summary.csv
-- speed_cv_summary.csv
+Generalization evaluation across multiple protocols with fair tuning audits.
 """
 
 import os
+
 import numpy as np
 import pandas as pd
 
@@ -41,6 +28,7 @@ MODEL_RUNNERS = {
         data_path=data_path,
         split_indices=split_indices,
         save_csv_path=None,
+        random_state=seed,
     ),
     "KAN": lambda data_path, seed, split_indices: train_and_eval_kan(
         data_path=data_path,
@@ -89,6 +77,7 @@ def _run_one_protocol(name, split_info, data_path, seed):
         pred_df[f"{model_name}_pred"] = res["y_pred"]
 
     metrics_rows = []
+    tuning_rows = []
     for model_name, res in results.items():
         row = {
             "protocol": name,
@@ -106,40 +95,48 @@ def _run_one_protocol(name, split_info, data_path, seed):
             row[k] = v
         metrics_rows.append(row)
 
-    return pd.DataFrame(metrics_rows), pred_df
+        for tuning_row in res.get("tuning_records", []):
+            merged = {
+                "protocol": name,
+                "protocol_desc": split_info.get("description", ""),
+                "model": model_name,
+            }
+            merged.update(tuning_row)
+            tuning_rows.append(merged)
+
+    return pd.DataFrame(metrics_rows), pred_df, pd.DataFrame(tuning_rows)
 
 
 def _build_all_protocols(X, y, seed):
     protocols = {}
 
-    # 1) 随机切分：网格内插值
     protocols["random_interp"] = build_protocol_splits(
-        X, y,
+        X,
+        y,
         protocol="random_stratified",
         random_state=seed,
     )
 
-    # 2) 留一开度层外推：7 折
     unique_openings = sorted(np.unique(X[:, 0]).tolist())
     for op in unique_openings:
         op_name = int(op) if float(op).is_integer() else op
         protocols[f"leave_opening_{op_name}_out"] = build_protocol_splits(
-            X, y,
+            X,
+            y,
             protocol="leave_one_opening_out",
             random_state=seed,
             holdout_opening=op,
         )
 
-    # 3) 留一速度段外推：补成 3 折
     speed_blocks = [
         ("leave_speed_20_24_out", 20, 24),
         ("leave_speed_38_42_out", 38, 42),
         ("leave_speed_56_60_out", 56, 60),
     ]
-
     for protocol_name, smin, smax in speed_blocks:
         protocols[protocol_name] = build_protocol_splits(
-            X, y,
+            X,
+            y,
             protocol="leave_speed_block_out",
             random_state=seed,
             holdout_speed_min=smin,
@@ -172,8 +169,7 @@ def _make_protocol_family_summary(df_metrics):
         return "other"
 
     df["protocol_family"] = df["protocol"].map(family_name)
-
-    agg = (
+    return (
         df.groupby(["protocol_family", "model"], as_index=False)
         .agg(
             r2_mean=("r2", "mean"),
@@ -189,15 +185,13 @@ def _make_protocol_family_summary(df_metrics):
         .sort_values(["protocol_family", "model"])
         .reset_index(drop=True)
     )
-    return agg
 
 
 def _make_opening_cv_summary(df_metrics):
     df = df_metrics[df_metrics["protocol"].str.startswith("leave_opening_")].copy()
     if len(df) == 0:
         return pd.DataFrame()
-
-    agg = (
+    return (
         df.groupby("model", as_index=False)
         .agg(
             r2_mean=("r2", "mean"),
@@ -213,15 +207,13 @@ def _make_opening_cv_summary(df_metrics):
         .sort_values("r2_mean", ascending=False)
         .reset_index(drop=True)
     )
-    return agg
 
 
 def _make_speed_cv_summary(df_metrics):
     df = df_metrics[df_metrics["protocol"].str.startswith("leave_speed_")].copy()
     if len(df) == 0:
         return pd.DataFrame()
-
-    agg = (
+    return (
         df.groupby("model", as_index=False)
         .agg(
             r2_mean=("r2", "mean"),
@@ -237,14 +229,12 @@ def _make_speed_cv_summary(df_metrics):
         .sort_values("r2_mean", ascending=False)
         .reset_index(drop=True)
     )
-    return agg
 
 
 def main():
     data_path = "data/dataset.xlsx"
     seed = 42
     X, y = load_data(data_path)
-
     protocols = _build_all_protocols(X, y, seed)
 
     run_dir = create_run_dir("evaluate_generalization")
@@ -255,26 +245,33 @@ def main():
         seed=seed,
         params={
             "models": list(MODEL_RUNNERS.keys()),
-            "protocols": {
-                k: _compact_protocol_meta(v)
-                for k, v in protocols.items()
+            "protocols": {k: _compact_protocol_meta(v) for k, v in protocols.items()},
+            "fair_tuning": {
+                "n_candidates": 24,
+                "n_repeats": 5,
+                "selection_metric": "mean_val_r2",
+                "tie_break_metric": "mean_val_are",
+                "budget_profile": "high",
             },
         },
     )
 
     metrics_all = []
     preds_all = []
+    tuning_all = []
 
     for name, split_info in protocols.items():
         print("\n" + "=" * 80)
         print(f"运行协议：{name} | {split_info.get('description', '')}")
         print("=" * 80)
-        mdf, pdf = _run_one_protocol(name, split_info, data_path, seed)
+        mdf, pdf, tdf = _run_one_protocol(name, split_info, data_path, seed)
         metrics_all.append(mdf)
         preds_all.append(pdf)
+        tuning_all.append(tdf)
 
     df_metrics = pd.concat(metrics_all, ignore_index=True)
     df_preds = pd.concat(preds_all, ignore_index=True)
+    df_tuning = pd.concat(tuning_all, ignore_index=True) if len(tuning_all) > 0 else pd.DataFrame()
     df_protocol_summary = _make_protocol_summary(df_metrics)
     df_family_summary = _make_protocol_family_summary(df_metrics)
     df_opening_cv_summary = _make_opening_cv_summary(df_metrics)
@@ -286,19 +283,21 @@ def main():
     save_dataframe(df_family_summary, os.path.join(run_dir, "protocol_family_summary.csv"))
     save_dataframe(df_opening_cv_summary, os.path.join(run_dir, "opening_cv_summary.csv"))
     save_dataframe(df_speed_cv_summary, os.path.join(run_dir, "speed_cv_summary.csv"))
+    if len(df_tuning) > 0:
+        save_dataframe(df_tuning, os.path.join(run_dir, "protocol_tuning_audit.csv"))
 
-    append_manifest_outputs(
-        run_dir,
-        [
-            {"path": "protocol_metrics.csv"},
-            {"path": "protocol_predictions.csv"},
-            {"path": "protocol_summary.csv"},
-            {"path": "protocol_family_summary.csv"},
-            {"path": "opening_cv_summary.csv"},
-            {"path": "speed_cv_summary.csv"},
-        ],
-    )
+    outputs = [
+        {"path": "protocol_metrics.csv"},
+        {"path": "protocol_predictions.csv"},
+        {"path": "protocol_summary.csv"},
+        {"path": "protocol_family_summary.csv"},
+        {"path": "opening_cv_summary.csv"},
+        {"path": "speed_cv_summary.csv"},
+    ]
+    if len(df_tuning) > 0:
+        outputs.append({"path": "protocol_tuning_audit.csv"})
 
+    append_manifest_outputs(run_dir, outputs)
     print(f"\n结果目录：{run_dir}")
 
 

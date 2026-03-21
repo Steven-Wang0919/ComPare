@@ -2,20 +2,11 @@
 """
 compare_all.py
 
-统一输出六个模型的对比结果到 runs/<timestamp>_compare_all/，
-并生成 run_manifest.json，避免仓库根目录与 output_data/ 中
-长期共存多套历史结果。
-
-输出文件：
-- forward_model_metrics.csv
-- forward_model_predictions.csv
-- inverse_model_metrics.csv
-- inverse_model_predictions_all.csv
-- inverse_model_predictions_main.csv
-- run_manifest.json
+Unified forward/inverse comparison with fair tuning audit outputs.
 """
 
 import os
+
 import numpy as np
 import pandas as pd
 
@@ -38,16 +29,13 @@ from run_utils import (
 def _to_1d_array(arr, name):
     out = np.asarray(arr).reshape(-1)
     if out.size == 0:
-        raise ValueError(f"{name} 为空，无法继续。")
+        raise ValueError(f"{name} is empty.")
     return out
 
 
 def _validate_same_length(arr1, arr2, name1, name2):
     if len(arr1) != len(arr2):
-        raise ValueError(
-            f"{name1} 与 {name2} 长度不一致："
-            f"{name1}={len(arr1)}, {name2}={len(arr2)}"
-        )
+        raise ValueError(f"{name1} and {name2} have different lengths.")
 
 
 def _validate_same_values(arr1, arr2, name1, name2, atol=1e-8, rtol=1e-6):
@@ -55,7 +43,7 @@ def _validate_same_values(arr1, arr2, name1, name2, atol=1e-8, rtol=1e-6):
         bad = np.where(~np.isclose(arr1, arr2, atol=atol, rtol=rtol, equal_nan=False))[0]
         idx = int(bad[0])
         raise ValueError(
-            f"{name1} 与 {name2} 数值不一致，首个差异 index={idx}："
+            f"{name1} and {name2} differ at index {idx}: "
             f"{name1}={arr1[idx]}, {name2}={arr2[idx]}"
         )
 
@@ -65,12 +53,11 @@ def _validate_same_mask(mask1, mask2, name1, name2):
     m2 = np.asarray(mask2).astype(bool).reshape(-1)
 
     _validate_same_length(m1, m2, name1, name2)
-
     if not np.array_equal(m1, m2):
         bad = np.where(m1 != m2)[0]
         idx = int(bad[0])
         raise ValueError(
-            f"{name1} 与 {name2} 不一致，首个差异 index={idx}："
+            f"{name1} and {name2} differ at index {idx}: "
             f"{name1}={m1[idx]}, {name2}={m2[idx]}"
         )
 
@@ -83,6 +70,24 @@ def _fmt_float(x, ndigits=6):
             return "NaN"
         return f"{float(x):.{ndigits}g}"
     return str(x)
+
+
+def _save_tuning_audit(output_dir, filename, model_results, extra_cols=None):
+    rows = []
+    extra_cols = extra_cols or {}
+    for model_name, result in model_results.items():
+        for row in result.get("tuning_records", []):
+            merged = dict(extra_cols)
+            merged["reported_model"] = model_name
+            merged.update(row)
+            rows.append(merged)
+
+    if len(rows) == 0:
+        return None
+
+    audit_path = os.path.join(output_dir, filename)
+    save_dataframe(pd.DataFrame(rows), audit_path)
+    return audit_path
 
 
 def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
@@ -98,6 +103,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     grnn_res = train_and_eval_grnn(
         data_path=data_path,
         save_csv_path=None,
+        random_state=seed,
     )
     kan_res = train_and_eval_kan(
         data_path=data_path,
@@ -171,9 +177,19 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "GRNN_pred": y_pred_grnn,
         "KAN_pred": y_pred_kan,
     })
-
     pred_path = os.path.join(output_dir, "forward_model_predictions.csv")
     save_dataframe(df_pred, pred_path)
+
+    tuning_audit_path = _save_tuning_audit(
+        output_dir,
+        "forward_tuning_audit.csv",
+        {
+            "MLP": mlp_res,
+            "GRNN": grnn_res,
+            "KAN": kan_res,
+        },
+        extra_cols={"comparison_scope": "forward"},
+    )
 
     print(f"正向指标已保存：{metrics_path}")
     print(f"正向预测已保存：{pred_path}")
@@ -181,6 +197,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     return {
         "metrics_path": metrics_path,
         "pred_path": pred_path,
+        "tuning_audit_path": tuning_audit_path,
     }
 
 
@@ -197,6 +214,7 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     grnn_res = train_and_eval_inverse_grnn(
         data_path=data_path,
         save_outputs_dir=None,
+        random_state=seed,
     )
     kan_res = train_and_eval_inverse_kan_v2(
         data_path=data_path,
@@ -237,8 +255,18 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     _validate_same_values(opening_all_mlp, opening_all_grnn, "inverse_MLP opening_all", "inverse_GRNN opening_all")
     _validate_same_values(opening_all_mlp, opening_all_kan, "inverse_MLP opening_all", "inverse_KAN opening_all")
 
-    _validate_same_values(strat_open_all_mlp, strat_open_all_grnn, "inverse_MLP strategy_opening_all", "inverse_GRNN strategy_opening_all")
-    _validate_same_values(strat_open_all_mlp, strat_open_all_kan, "inverse_MLP strategy_opening_all", "inverse_KAN strategy_opening_all")
+    _validate_same_values(
+        strat_open_all_mlp,
+        strat_open_all_grnn,
+        "inverse_MLP strategy_opening_all",
+        "inverse_GRNN strategy_opening_all",
+    )
+    _validate_same_values(
+        strat_open_all_mlp,
+        strat_open_all_kan,
+        "inverse_MLP strategy_opening_all",
+        "inverse_KAN strategy_opening_all",
+    )
 
     _validate_same_mask(policy_mask_mlp, policy_mask_grnn, "inverse_MLP policy_mask", "inverse_GRNN policy_mask")
     _validate_same_mask(policy_mask_mlp, policy_mask_kan, "inverse_MLP policy_mask", "inverse_KAN policy_mask")
@@ -324,6 +352,17 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     main_path = os.path.join(output_dir, "inverse_model_predictions_main.csv")
     save_dataframe(df_main, main_path)
 
+    tuning_audit_path = _save_tuning_audit(
+        output_dir,
+        "inverse_tuning_audit.csv",
+        {
+            "inverse_MLP": mlp_res,
+            "inverse_GRNN": grnn_res,
+            "inverse_KAN": kan_res,
+        },
+        extra_cols={"comparison_scope": "inverse"},
+    )
+
     print(f"反向指标已保存：{metrics_path}")
     print(f"反向全测试集预测已保存：{all_path}")
     print(f"反向主结果子集预测已保存：{main_path}")
@@ -332,6 +371,7 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "metrics_path": metrics_path,
         "all_path": all_path,
         "main_path": main_path,
+        "tuning_audit_path": tuning_audit_path,
     }
 
 
@@ -349,6 +389,13 @@ def main():
             "forward_models": ["MLP", "GRNN", "KAN"],
             "inverse_models": ["inverse_MLP", "inverse_GRNN", "inverse_KAN"],
             "save_root": "runs",
+            "fair_tuning": {
+                "n_candidates": 24,
+                "n_repeats": 5,
+                "selection_metric": "mean_val_r2",
+                "tie_break_metric": "mean_val_are",
+                "budget_profile": "high",
+            },
         },
     )
 
@@ -363,9 +410,11 @@ def main():
         [
             {"path": os.path.relpath(forward_outputs["metrics_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(forward_outputs["pred_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(forward_outputs["tuning_audit_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(inverse_outputs["metrics_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(inverse_outputs["all_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(inverse_outputs["main_path"], run_dir).replace("\\", "/")},
+            {"path": os.path.relpath(inverse_outputs["tuning_audit_path"], run_dir).replace("\\", "/")},
         ],
     )
 

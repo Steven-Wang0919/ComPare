@@ -71,12 +71,20 @@
 
 所有模型统一遵循：
 
-1. `train` 训练候选模型
-2. `val` 选择超参数
-3. `train + val` 训练最终模型
-4. `test` 评估
+1. 固定外层 `train / val / test`
+2. 将外层 `train + val` 合并为开发集 `dev`
+3. 在 `dev` 上进行统一预算的重复验证调参
+4. 使用选中超参数在完整 `dev` 上训练最终模型
+5. 在外层 `test` 上评估
 
 归一化统计范围统一使用 `train`。
+
+当前版本用于公平比较的默认调参协议为：
+
+- 每个模型固定 `24` 个候选超参数配置
+- 每个候选配置固定 `5` 次重复验证
+- 超参数选择标准统一为：`mean(val R2)` 最大；若并列，则 `mean(val ARE)` 最小；若仍并列，则 `std(val R2)` 最小
+- 公平比较强调“相同的调参与验证机会”，而非“相同的参数数量”
 
 ---
 
@@ -129,9 +137,11 @@ python compare_all.py
 
 - `forward_model_metrics.csv`
 - `forward_model_predictions.csv`
+- `forward_tuning_audit.csv`
 - `inverse_model_metrics.csv`
 - `inverse_model_predictions_all.csv`
 - `inverse_model_predictions_main.csv`
+- `inverse_tuning_audit.csv`
 - `run_manifest.json`
 
 ### 5.3 基于对比结果绘图
@@ -154,6 +164,11 @@ python plot_figures.py --run-dir runs/<timestamp>_compare_all
 python evaluate_generalization.py
 python evaluate_inverse_opening_holdout.py
 ```
+
+其中还会额外输出调参审计文件：
+
+- `protocol_tuning_audit.csv`
+- `inverse_opening_holdout_tuning_audit.csv`
 
 ---
 
@@ -208,5 +223,5 @@ runs/<timestamp>_<entry>/
 ## 9. 环境说明
 
 `requirements.txt` 记录作者实验环境版本，可作为复现基线。
-
+本机的python解释器为conda配置，地址为："D:\ProgramData\miniconda3\envs\fertilizer_gpu"
 若目标机器的 CUDA/CPU 条件不同，建议在保持主依赖兼容前提下调整 PyTorch 安装版本。
