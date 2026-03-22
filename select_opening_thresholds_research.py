@@ -15,7 +15,6 @@ Outputs:
 import argparse
 import json
 import os
-from itertools import combinations
 
 import matplotlib
 matplotlib.use("Agg")
@@ -31,8 +30,6 @@ from sklearn.mixture import GaussianMixture
 
 from common_utils import load_data
 from policy_config import (
-    LEGACY_LOW_MID_THRESHOLD,
-    LEGACY_MID_HIGH_THRESHOLD,
     POLICY_LABEL,
     POLICY_LOW_MID_THRESHOLD,
     POLICY_MID_HIGH_THRESHOLD,
@@ -354,15 +351,12 @@ def _evaluate_fixed_triplet_rule(
     mid_high,
     mass_values,
     opening_model_map,
-    learned_low_mid,
-    learned_mid_high,
     centers,
 ):
     mass_values = np.asarray(mass_values, dtype=float).reshape(-1)
     mass_min = float(np.min(mass_values))
     mass_max = float(np.max(mass_values))
     zone_idx = _zone_index_from_thresholds(mass_values, low_mid, mid_high)
-    learned_zone_idx = _zone_index_from_thresholds(mass_values, learned_low_mid, learned_mid_high)
     zone_summaries = _summarize_fixed_triplet_zones(
         threshold_source=threshold_source,
         triplet=triplet,
@@ -393,16 +387,14 @@ def _evaluate_fixed_triplet_rule(
         "mid_estimated_mass": float(estimated_masses[1]),
         "high_estimated_mass": float(estimated_masses[2]),
         "feasible_coverage_rate": float(np.mean(feasibility)),
-        "zone_label_agreement_vs_kmeans": float(np.mean(zone_idx == learned_zone_idx)),
-        "low_mid_deviation_vs_kmeans": float(low_mid - learned_low_mid),
-        "mid_high_deviation_vs_kmeans": float(mid_high - learned_mid_high),
+        "sample_count": int(len(mass_values)),
         "zone_summaries": zone_summaries,
     }
 
 
-def _build_rule_comparison(engineering_eval, learned_eval):
+def _build_rule_comparison(*evaluations):
     rows = []
-    for item in [engineering_eval, learned_eval]:
+    for item in evaluations:
         rows.append({
             "rule_name": item["rule_name"],
             "threshold_source": item["threshold_source"],
@@ -415,9 +407,7 @@ def _build_rule_comparison(engineering_eval, learned_eval):
             "mid_estimated_mass": float(item["mid_estimated_mass"]),
             "high_estimated_mass": float(item["high_estimated_mass"]),
             "feasible_coverage_rate": float(item["feasible_coverage_rate"]),
-            "zone_label_agreement_vs_kmeans": float(item["zone_label_agreement_vs_kmeans"]),
-            "low_mid_deviation_vs_kmeans": float(item["low_mid_deviation_vs_kmeans"]),
-            "mid_high_deviation_vs_kmeans": float(item["mid_high_deviation_vs_kmeans"]),
+            "sample_count": int(item["sample_count"]),
         })
     return pd.DataFrame(rows)
 
@@ -431,14 +421,12 @@ def _make_mass_distribution_figure(fig_path, masses, kmeans_res, gmm_res):
     fig, ax = plt.subplots(figsize=(8, 4.8))
     sns.histplot(masses, bins=24, kde=True, ax=ax, color="#4C78A8", alpha=0.35)
 
-    ax.axvline(LEGACY_LOW_MID_THRESHOLD, color="#E45756", linestyle="--", linewidth=2, label="Engineering low-mid")
-    ax.axvline(LEGACY_MID_HIGH_THRESHOLD, color="#E45756", linestyle="--", linewidth=2, label="Engineering mid-high")
     ax.axvline(kmeans_res["low_mid_threshold"], color="#54A24B", linestyle="-", linewidth=2, label="KMeans low-mid")
     ax.axvline(kmeans_res["mid_high_threshold"], color="#54A24B", linestyle="-", linewidth=2, label="KMeans mid-high")
     ax.axvline(gmm_res["low_mid_threshold"], color="#B279A2", linestyle=":", linewidth=2, label="GMM low-mid")
     ax.axvline(gmm_res["mid_high_threshold"], color="#B279A2", linestyle=":", linewidth=2, label="GMM mid-high")
 
-    ax.set_title("Mass Distribution and Policy Thresholds")
+    ax.set_title("Mass Distribution and Learned Thresholds")
     ax.set_xlabel("Mass (g/min)")
     ax.set_ylabel("Count")
     ax.legend(ncol=2, fontsize=9)
@@ -468,8 +456,6 @@ def _make_opening_ranges_figure(fig_path, opening_models):
             zorder=3,
         )
 
-    ax.axvline(LEGACY_LOW_MID_THRESHOLD, color="#E45756", linestyle="--", linewidth=1.8)
-    ax.axvline(LEGACY_MID_HIGH_THRESHOLD, color="#E45756", linestyle="--", linewidth=1.8)
     ax.set_yticks(y_pos)
     ax.set_yticklabels([f"{int(row['opening'])} mm" for row in opening_models])
     ax.set_xlabel("Mass (g/min)")
@@ -499,29 +485,16 @@ def _draw_rule_panel(ax, thresholds, triplet, opening_model_map, title):
     ax.set_title(title)
 
 
-def _make_rule_comparison_figure(fig_path, rule_comparison_df, opening_model_map, mass_min, mass_max):
-    current_row = rule_comparison_df.loc[rule_comparison_df["rule_name"] == "engineering_fixed_thresholds"].iloc[0]
-    best_row = rule_comparison_df.loc[rule_comparison_df["rule_name"] == "kmeans_learned_thresholds"].iloc[0]
-
-    fig, axes = plt.subplots(2, 1, figsize=(9, 5.8), sharex=True)
-    for ax in axes:
-        ax.set_xlim(mass_min, mass_max)
-
+def _make_policy_threshold_figure(fig_path, policy_eval, opening_model_map, mass_min, mass_max):
+    fig, ax = plt.subplots(figsize=(9, 3.6))
+    ax.set_xlim(mass_min, mass_max)
     _draw_rule_panel(
-        axes[0],
-        thresholds=(current_row["low_mid_threshold"], current_row["mid_high_threshold"]),
-        triplet=(current_row["low_opening"], current_row["mid_opening"], current_row["high_opening"]),
+        ax,
+        thresholds=(policy_eval["low_mid_threshold"], policy_eval["mid_high_threshold"]),
+        triplet=(policy_eval["low_opening"], policy_eval["mid_opening"], policy_eval["high_opening"]),
         opening_model_map=opening_model_map,
-        title="Current engineering rule",
+        title="Current policy with fixed triplet and learned thresholds",
     )
-    _draw_rule_panel(
-        axes[1],
-        thresholds=(best_row["low_mid_threshold"], best_row["mid_high_threshold"]),
-        triplet=(best_row["low_opening"], best_row["mid_opening"], best_row["high_opening"]),
-        opening_model_map=opening_model_map,
-        title="Fixed triplet with learned thresholds",
-    )
-
     plt.tight_layout()
     plt.savefig(fig_path, dpi=300)
     plt.close(fig)
@@ -531,33 +504,22 @@ def _build_narrative(summary, top_k):
     data_info = summary["data_overview"]
     kmeans_info = summary["kmeans_thresholds"]
     gmm_info = summary["gmm_sensitivity"]
-    learned = summary["learned_rule_validation"]
+    policy_eval = summary["learned_rule_validation"]
     triplet = summary["fixed_triplet_mm"]
 
-    paper_text = f"""## 论文版
+    paper_text = f"""## 论文表述
+基于 `data/dataset.xlsx` 中 {data_info['sample_count']} 个样本和 {len(data_info['observed_openings_mm'])} 个观测开度档位（{', '.join(str(int(v)) for v in data_info['observed_openings_mm'])} mm），本文对固定开度三元组 `({int(triplet[0])}, {int(triplet[1])}, {int(triplet[2])})` 的三段式策略边界进行了专门研究。研究目标不是重新选择开度档位，而是在固定低、中、高三档控制开度的前提下，学习更符合当前数据分布的排肥量分界。
+在排肥量维度上，`KMeans(3)` 学得的主分界点分别为 `{_fmt_float(kmeans_info['low_mid_threshold'])}` g/min 和 `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min；`GMM(3)` 敏感性分析得到的对应分界点为 `{_fmt_float(gmm_info['low_mid_threshold'])}` g/min 和 `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min，说明三段边界在数据上具有较好的稳定性。当前默认策略采用固定三元组 `20/35/50 mm` 与 KMeans 主边界 `{_fmt_float(kmeans_info['low_mid_threshold'])}/{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min。
+在该固定三元组下，当前策略对样本的可行覆盖率为 `{_fmt_float(policy_eval['feasible_coverage_rate'])}`。因此，`20/35/50 mm` 应表述为固定的低、中、高三档控制开度，而数据驱动学习的对象是这三档之间的排量分界。"""
 
-基于 `data/dataset.xlsx` 中 {data_info['sample_count']} 个样本、{len(data_info['observed_openings_mm'])} 个观测开度档位（{', '.join(str(int(v)) for v in data_info['observed_openings_mm'])} mm），本文对固定开度三元组 `({int(triplet[0])}, {int(triplet[1])}, {int(triplet[2])})` 的三段式策略边界进行了专门研究。研究目标不是重新选择开度档位，而是在固定低/中/高三档控制开度的前提下，学习三档之间更符合当前数据的排量分界。
+    defense_text = f"""## 答辩表述
+我们没有改变三档开度本身，仍然采用固定的 `20/35/50 mm`。这次优化的对象不是开度档位，而是这三档之间的排肥量分界。
+结果是，数据聚类给出的两个主分界点大约在 `{_fmt_float(kmeans_info['low_mid_threshold'])}` 和 `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min；敏感性分析给出的边界在 `{_fmt_float(gmm_info['low_mid_threshold'])}` 和 `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min 左右。这说明三段式控制思路本身是稳定的，当前默认边界可以直接由数据结果支撑。"""
 
-在排肥量维度上，`KMeans(3)` 学得的主分界点分别为 `{_fmt_float(kmeans_info['low_mid_threshold'])}` g/min 和 `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min；`GMM(3)` 敏感性分析得到的对应分界点为 `{_fmt_float(gmm_info['low_mid_threshold'])}` g/min 和 `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min，说明三段边界在数据上具有较好的稳定性。相较于旧工程边界 `2800/4800 g/min`，新的数据驱动边界在固定三元组下保持了同样的控制结构，但将低/中和中/高分界分别上移到了 `{_fmt_float(kmeans_info['low_mid_threshold'])}` 和 `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min。
-
-因此，`20/35/50 mm` 应表述为固定的低、中、高三档控制开度，而数据驱动学习的对象是这三档之间的排量分界。旧工程边界 `2800/4800 g/min` 可作为历史基线，新边界 `{_fmt_float(kmeans_info['low_mid_threshold'])}/{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min` 则作为当前默认策略边界。
-"""
-
-    defense_text = f"""## 答辩版
-
-我们没有改三档开度本身，还是固定 `20/35/50 mm`。这次优化的不是开度档位，而是三档之间的排量分界。
-
-结果是，数据聚类给出的两个主分界点大约在 `{_fmt_float(kmeans_info['low_mid_threshold'])}` 和 `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min；敏感性分析给出的边界在 `{_fmt_float(gmm_info['low_mid_threshold'])}` 和 `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min 左右。也就是说，三段式思路本身是稳定的，只是原来 `2800/4800 g/min` 偏保守，现在我们把默认边界升级成更贴近数据的版本。
-"""
-
-    readme_text = f"""## README / 代码说明版
-
-`select_opening_thresholds_research.py` 用于给固定开度三元组 `20/35/50 mm` 的策略边界提供证据链。脚本会同时对比旧工程边界 `2800/4800 g/min` 与数据驱动边界，并输出结构化结果、图表和可直接引用的文字摘要。
-
-当前数据上，KMeans 学得的主边界约为 `{_fmt_float(kmeans_info['low_mid_threshold'])}` / `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min，GMM 敏感性边界约为 `{_fmt_float(gmm_info['low_mid_threshold'])}` / `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min。运行时默认使用固定三元组 `20/35/50 mm` 和 KMeans 主边界，不再使用旧的 `2800/4800 g/min` 作为默认策略阈值。
-
-输出中的 `rule_comparison.csv` 和 `threshold_zone_summary.csv` 用于直接比较旧边界和新边界在固定三段策略下的区间、覆盖和偏差。
-"""
+    readme_text = f"""## README / 代码说明表述
+`select_opening_thresholds_research.py` 用于给固定开度三元组 `20/35/50 mm` 的当前策略边界提供证据链。脚本输出结构化结果、图表和可直接引用的文字摘要，用于解释 KMeans 主边界以及 GMM 敏感性边界。
+当前数据上，KMeans 学得的主边界约为 `{_fmt_float(kmeans_info['low_mid_threshold'])}` / `{_fmt_float(kmeans_info['mid_high_threshold'])}` g/min，GMM 敏感性边界约为 `{_fmt_float(gmm_info['low_mid_threshold'])}` / `{_fmt_float(gmm_info['mid_high_threshold'])}` g/min。运行时默认使用固定三元组 `20/35/50 mm` 和 KMeans 主边界。
+输出中的 `rule_comparison.csv` 与 `threshold_zone_summary.csv` 仅描述当前策略在固定三段控制结构下的区间、覆盖和中心位置，不再包含历史规则对照。"""
 
     return "\n\n".join([paper_text, defense_text, readme_text]).strip() + "\n"
 
@@ -590,37 +552,17 @@ def run_research(data_path, n_clusters, reference_speed, candidate_source, top_k
     mass_min = float(np.min(mass_values))
     mass_max = float(np.max(mass_values))
     fixed_triplet = POLICY_TARGET_OPENINGS
-    engineering_centers = [
-        0.5 * (mass_min + LEGACY_LOW_MID_THRESHOLD),
-        0.5 * (LEGACY_LOW_MID_THRESHOLD + LEGACY_MID_HIGH_THRESHOLD),
-        0.5 * (LEGACY_MID_HIGH_THRESHOLD + mass_max),
-    ]
-    engineering_eval = _evaluate_fixed_triplet_rule(
-        threshold_source="engineering_fixed_thresholds",
-        triplet=fixed_triplet,
-        low_mid=LEGACY_LOW_MID_THRESHOLD,
-        mid_high=LEGACY_MID_HIGH_THRESHOLD,
-        mass_values=mass_values,
-        opening_model_map=opening_model_map,
-        learned_low_mid=POLICY_LOW_MID_THRESHOLD,
-        learned_mid_high=POLICY_MID_HIGH_THRESHOLD,
-        centers=engineering_centers,
-    )
-    learned_eval = _evaluate_fixed_triplet_rule(
-        threshold_source="kmeans_learned_thresholds",
+    policy_eval = _evaluate_fixed_triplet_rule(
+        threshold_source="current_policy_thresholds",
         triplet=fixed_triplet,
         low_mid=POLICY_LOW_MID_THRESHOLD,
         mid_high=POLICY_MID_HIGH_THRESHOLD,
         mass_values=mass_values,
         opening_model_map=opening_model_map,
-        learned_low_mid=POLICY_LOW_MID_THRESHOLD,
-        learned_mid_high=POLICY_MID_HIGH_THRESHOLD,
         centers=kmeans_res["cluster_centers"],
     )
-    threshold_zone_summary_df = pd.DataFrame(
-        engineering_eval["zone_summaries"] + learned_eval["zone_summaries"]
-    )
-    rule_comparison_df = _build_rule_comparison(engineering_eval, learned_eval)
+    threshold_zone_summary_df = pd.DataFrame(policy_eval["zone_summaries"])
+    rule_comparison_df = _build_rule_comparison(policy_eval)
 
     summary = {
         "config": {
@@ -642,18 +584,13 @@ def run_research(data_path, n_clusters, reference_speed, candidate_source, top_k
         },
         "fixed_triplet_mm": _to_float_list(fixed_triplet),
         "opening_models": opening_models,
-        "engineering_rule_validation": engineering_eval,
-        "learned_rule_validation": learned_eval,
+        "learned_rule_validation": policy_eval,
         "kmeans_thresholds": {
             "low_mid_threshold": float(POLICY_LOW_MID_THRESHOLD),
             "mid_high_threshold": float(POLICY_MID_HIGH_THRESHOLD),
             "cluster_centers": _to_float_list(kmeans_res["cluster_centers"]),
             "cluster_summary": kmeans_res["cluster_summary"],
             "inertia": float(kmeans_res["inertia"]),
-        },
-        "engineering_thresholds": {
-            "low_mid_threshold": float(LEGACY_LOW_MID_THRESHOLD),
-            "mid_high_threshold": float(LEGACY_MID_HIGH_THRESHOLD),
         },
         "gmm_sensitivity": {
             "low_mid_threshold": float(gmm_res["low_mid_threshold"]),
@@ -680,12 +617,12 @@ def run_research(data_path, n_clusters, reference_speed, candidate_source, top_k
 
     mass_fig_path = os.path.join(figure_dir, "mass_distribution_thresholds.png")
     opening_fig_path = os.path.join(figure_dir, "opening_reachable_mass_ranges.png")
-    comparison_fig_path = os.path.join(figure_dir, "current_vs_data_driven_rules.png")
+    policy_fig_path = os.path.join(figure_dir, "policy_threshold_rule.png")
     _make_mass_distribution_figure(mass_fig_path, mass_values, kmeans_res, gmm_res)
     _make_opening_ranges_figure(opening_fig_path, opening_models)
-    _make_rule_comparison_figure(
-        comparison_fig_path,
-        rule_comparison_df=rule_comparison_df,
+    _make_policy_threshold_figure(
+        policy_fig_path,
+        policy_eval=policy_eval,
         opening_model_map=opening_model_map,
         mass_min=mass_min,
         mass_max=mass_max,
@@ -702,11 +639,10 @@ def run_research(data_path, n_clusters, reference_speed, candidate_source, top_k
             "candidate_source": candidate_source,
             "policy_label": POLICY_LABEL,
             "fixed_triplet_mm": _to_float_list(fixed_triplet),
-            "legacy_thresholds": [LEGACY_LOW_MID_THRESHOLD, LEGACY_MID_HIGH_THRESHOLD],
             "policy_thresholds": [POLICY_LOW_MID_THRESHOLD, POLICY_MID_HIGH_THRESHOLD],
         },
         extra={
-            "notes": "Research script for validating a fixed triplet policy and upgrading only the mass thresholds.",
+            "notes": "Research script for validating the current fixed-triplet policy thresholds.",
         },
     )
 
@@ -720,7 +656,7 @@ def run_research(data_path, n_clusters, reference_speed, candidate_source, top_k
             {"path": "narrative_summary.md"},
             {"path": "figures/mass_distribution_thresholds.png"},
             {"path": "figures/opening_reachable_mass_ranges.png"},
-            {"path": "figures/current_vs_data_driven_rules.png"},
+            {"path": "figures/policy_threshold_rule.png"},
         ],
     )
 
@@ -767,3 +703,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
