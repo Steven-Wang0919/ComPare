@@ -2,13 +2,12 @@
 """
 train_kan.py
 
-Forward KAN with a shared fair tuning protocol.
+Forward KAN with a shared fair tuning protocol and replayable artifact bundles.
 """
 
-import json
+import gc
 import os
 import random
-import gc
 
 import numpy as np
 import pandas as pd
@@ -32,13 +31,36 @@ from fair_tuning import (
     run_fair_tuning,
     tuning_config_to_dict,
 )
-from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
+from run_utils import (
+    append_manifest_outputs,
+    build_artifact_metadata,
+    build_split_indices_payload,
+    build_tuning_protocol_payload,
+    create_run_dir,
+    ensure_dir,
+    save_dataframe,
+    save_test_slice,
+    write_json,
+    write_manifest,
+)
 
 
 EPS = 1e-8
 DEFAULT_HIDDEN_DIM_CANDIDATES = [4, 8, 16, 32]
 DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
 DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
+MODEL_FILENAME = "model.pth"
+META_FILENAME = "meta.json"
+
+
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
 
 
 def _cleanup_torch_runtime(*, model=None, tensors=None, device=None):
@@ -320,52 +342,51 @@ def save_forward_artifacts(
     model_path,
     meta_path,
     *,
-    seed,
     data_path,
-    hidden_dim,
-    lr,
-    weight_decay,
-    epochs,
-    search_epochs,
-    gamma,
-    best_val_r2,
-    x_min,
-    x_max,
-    y_min,
-    y_max,
+    best_config,
+    norm_stats,
     x_train_raw,
     y_train_raw,
     idx_tr,
     idx_val,
     idx_te,
+    tuning_config,
+    tuning_result,
+    resolved_inner_splits=None,
+    artifact_extra=None,
+    artifact_source_files=None,
+    x_test_raw=None,
+    y_test_raw=None,
+    save_test_slice_flag=False,
 ):
     torch.save(model.state_dict(), model_path)
+    test_inputs_path = None
+    test_targets_path = None
+    if save_test_slice_flag and x_test_raw is not None and y_test_raw is not None:
+        test_inputs_path, test_targets_path = save_test_slice(os.path.dirname(model_path), x_test_raw, y_test_raw)
 
-    meta = {
-        "artifact_type": "forward_model_bundle",
-        "model_name": "KAN",
-        "model_class": "FertilizerKAN",
-        "weight_path": model_path.replace("\\", "/"),
-        "data_path": data_path,
-        "seed": int(seed),
-        "hyperparameters": {
-            "hidden_dim": int(hidden_dim),
-            "lr": float(lr),
-            "weight_decay": float(weight_decay),
-            "epochs": int(epochs),
-            "search_epochs": int(search_epochs),
-            "gamma": float(gamma),
-        },
-        "validation_result": {
-            "best_val_r2": float(best_val_r2),
-        },
-        "normalization_params": {
-            "X_min": np.asarray(x_min).tolist(),
-            "X_max": np.asarray(x_max).tolist(),
-            "y_min": float(np.asarray(y_min).reshape(-1)[0]),
-            "y_max": float(np.asarray(y_max).reshape(-1)[0]),
-        },
-        "training_domain": {
+    tuning_payload = build_tuning_protocol_payload(
+        tuning_config_to_dict(tuning_config),
+        inner_split_strategy=tuning_result["inner_split_strategy"],
+        inner_split_meta=tuning_result["inner_split_meta"],
+        inner_splits=resolved_inner_splits,
+        tuning_seed=int(tuning_config.seed),
+        n_repeats=int(tuning_result["inner_fold_count"]),
+        inner_val_ratio=tuning_config.inner_val_ratio,
+    )
+    meta = build_artifact_metadata(
+        artifact_type="model_bundle",
+        task_name="forward",
+        model_name="KAN",
+        model_class="train_kan.FertilizerKAN",
+        data_path=data_path,
+        best_config=best_config,
+        normalization_params=norm_stats,
+        split_indices=build_split_indices_payload(idx_tr, idx_val, idx_te),
+        tuning_protocol=tuning_payload,
+        training_domain={
+            "feature_names": ["opening_mm", "speed_r_min"],
+            "target_name": "mass_g_min",
             "opening_min": float(x_train_raw[:, 0].min()),
             "opening_max": float(x_train_raw[:, 0].max()),
             "speed_min": float(x_train_raw[:, 1].min()),
@@ -373,15 +394,17 @@ def save_forward_artifacts(
             "mass_min": float(y_train_raw.min()),
             "mass_max": float(y_train_raw.max()),
         },
-        "split_info": {
-            "train_size": int(len(idx_tr)),
-            "val_size": int(len(idx_val)),
-            "test_size": int(len(idx_te)),
+        extra={
+            "model_file": os.path.basename(model_path),
+            "meta_file": os.path.basename(meta_path),
+            "test_inputs_file": os.path.basename(test_inputs_path) if test_inputs_path is not None else None,
+            "test_targets_file": os.path.basename(test_targets_path) if test_targets_path is not None else None,
+            **dict(artifact_extra or {}),
         },
-    }
-
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+        source_files=artifact_source_files or _artifact_source_files(),
+    )
+    write_json(meta_path, meta)
+    return test_inputs_path, test_targets_path
 
 
 def train_and_eval_kan(
@@ -396,14 +419,17 @@ def train_and_eval_kan(
     seed=42,
     save_artifacts=False,
     artifact_dir=None,
-    weight_filename="kan_forward.pth",
-    meta_filename="kan_forward_meta.json",
+    weight_filename=MODEL_FILENAME,
+    meta_filename=META_FILENAME,
     split_indices=None,
     tuning_config=None,
     save_tuning_records_path=None,
     inner_splits=None,
     inner_split_strategy=None,
     inner_split_meta=None,
+    save_test_slice=False,
+    artifact_extra=None,
+    artifact_source_files=None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print("\n=== 训练 KAN（公平调参协议） ===")
@@ -446,6 +472,7 @@ def train_and_eval_kan(
     )
 
     def eval_candidate_fn(*, config, idx_train, idx_val, fold_id, split_meta):
+        del split_meta
         res = _fit_predict_forward_kan(
             X_dev_raw[idx_train],
             y_dev_raw[idx_train],
@@ -523,35 +550,44 @@ def train_and_eval_kan(
 
     model_path = None
     meta_path = None
+    artifact_test_inputs_path = None
+    artifact_test_targets_path = None
     if save_artifacts:
         if artifact_dir is None:
             raise ValueError("save_artifacts=True 时必须提供 artifact_dir")
         ensure_dir(artifact_dir)
         model_path = os.path.join(artifact_dir, weight_filename)
         meta_path = os.path.join(artifact_dir, meta_filename)
-        norm_stats = final_fit["norm_stats"]
-        save_forward_artifacts(
+        artifact_test_inputs_path, artifact_test_targets_path = save_forward_artifacts(
             model_final,
             model_path=model_path,
             meta_path=meta_path,
-            seed=seed,
             data_path=data_path,
-            hidden_dim=best_config["hidden_dim"],
-            lr=best_config["lr"],
-            weight_decay=best_config["weight_decay"],
-            epochs=epochs,
-            search_epochs=search_epochs,
-            gamma=gamma,
-            best_val_r2=best_summary["mean_val_r2"],
-            x_min=norm_stats["X_min"],
-            x_max=norm_stats["X_max"],
-            y_min=norm_stats["y_min"],
-            y_max=norm_stats["y_max"],
+            best_config={
+                "hidden_dim": int(best_config["hidden_dim"]),
+                "lr": float(best_config["lr"]),
+                "weight_decay": float(best_config["weight_decay"]),
+                "epochs": int(epochs),
+                "search_epochs": int(search_epochs),
+                "gamma": float(gamma),
+                "best_val_r2": float(best_summary["mean_val_r2"]),
+            },
+            norm_stats=final_fit["norm_stats"],
             x_train_raw=X_dev_raw,
             y_train_raw=y_dev_raw,
             idx_tr=idx_tr,
             idx_val=idx_val,
             idx_te=idx_te,
+            tuning_config=tuning_config,
+            tuning_result=tuning_result,
+            resolved_inner_splits=(
+                inner_splits if tuning_result["inner_split_strategy"] != "repeated_random" else None
+            ),
+            artifact_extra=artifact_extra,
+            artifact_source_files=artifact_source_files,
+            x_test_raw=X_test_raw,
+            y_test_raw=y_test_raw,
+            save_test_slice_flag=save_test_slice,
         )
         print(f"KAN 工件已保存：{artifact_dir}")
 
@@ -572,8 +608,11 @@ def train_and_eval_kan(
         "y_pred": y_pred_kan,
         "x_test_raw": X_test_raw,
         "seed": seed,
+        "artifact_dir": artifact_dir,
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,
+        "artifact_test_inputs_path": artifact_test_inputs_path,
+        "artifact_test_targets_path": artifact_test_targets_path,
         "tuning_protocol": tuning_config_to_dict(tuning_config),
         "trial_budget": int(tuning_config.n_candidates),
         "validation_repeats": int(tuning_result["inner_fold_count"]),
@@ -591,7 +630,7 @@ def main():
     run_dir = create_run_dir("train_kan")
     output_csv = os.path.join(run_dir, "results_kan.csv")
     tuning_csv = os.path.join(run_dir, "tuning_records_kan.csv")
-    artifact_dir = os.path.join(run_dir, "artifacts")
+    artifact_dir = os.path.join(run_dir, "artifacts", "forward", "KAN")
 
     write_manifest(
         run_dir,
@@ -613,6 +652,7 @@ def main():
                 "budget_profile": "high",
             },
         },
+        source_files=_artifact_source_files(),
     )
 
     res = train_and_eval_kan(
@@ -621,6 +661,15 @@ def main():
         save_artifacts=True,
         artifact_dir=artifact_dir,
         save_tuning_records_path=tuning_csv,
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": run_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": "results_kan.csv",
+                "prediction_column": "KAN_pred",
+                "target_column": "true",
+            },
+        },
     )
 
     outputs = [
@@ -628,9 +677,13 @@ def main():
         {"path": "tuning_records_kan.csv"},
     ]
     if res["artifact_model_path"] is not None:
-        outputs.append({"path": "artifacts/kan_forward.pth"})
+        outputs.append({"path": "artifacts/forward/KAN/model.pth"})
     if res["artifact_meta_path"] is not None:
-        outputs.append({"path": "artifacts/kan_forward_meta.json"})
+        outputs.append({"path": "artifacts/forward/KAN/meta.json"})
+    if res["artifact_test_inputs_path"] is not None:
+        outputs.append({"path": "artifacts/forward/KAN/test_inputs.npy"})
+    if res["artifact_test_targets_path"] is not None:
+        outputs.append({"path": "artifacts/forward/KAN/test_targets.npy"})
 
     append_manifest_outputs(run_dir, outputs)
     print(f"\n本次运行目录：{run_dir}")

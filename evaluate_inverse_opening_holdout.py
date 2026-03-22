@@ -32,6 +32,34 @@ from run_utils import (
 VAL_RATIO = 0.2
 
 
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "inverse_mlp.py"),
+        os.path.join(base_dir, "inverse_grnn.py"),
+        os.path.join(base_dir, "inverse_kan.py"),
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "policy_config.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
+
+
+def _artifact_outputs_from_result(result, run_dir):
+    outputs = []
+    for key in [
+        "artifact_model_path",
+        "artifact_meta_path",
+        "artifact_test_inputs_path",
+        "artifact_test_targets_path",
+    ]:
+        path = result.get(key)
+        if path:
+            outputs.append({"path": os.path.relpath(path, run_dir).replace("\\", "/")})
+    return outputs
+
+
 def _cleanup_runtime():
     gc.collect()
     try:
@@ -324,6 +352,8 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
     predictions_all = []
     predictions_main = []
     tuning_rows = []
+    artifact_outputs = []
+    pred_all_relpath = "inverse_opening_holdout_predictions_all.csv"
 
     total_folds = len(folds)
     for fold_info in folds:
@@ -356,19 +386,81 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
             random_state=seed,
             save_outputs_dir=None,
             split_indices=split_indices,
+            save_artifacts=True,
+            artifact_dir=os.path.join(
+                output_dir,
+                "artifacts",
+                f"fold_{int(fold_id):02d}_opening_{_fmt_float(test_opening)}",
+                "inverse_MLP",
+            ),
+            save_test_slice=True,
+            artifact_extra={
+                "run_dir": output_dir.replace("\\", "/"),
+                "fold_id": int(fold_id),
+                "test_opening_mm": float(test_opening),
+                "train_val_openings_mm": fold_info["train_val_openings_label"],
+                "reference_output": {
+                    "path": pred_all_relpath,
+                    "filter_column": "fold_id",
+                    "filter_value": int(fold_id),
+                    "prediction_column": "inverse_MLP_pred",
+                    "target_column": "true_speed_r_min",
+                },
+            },
         )
         grnn_res = train_and_eval_inverse_grnn(
             data_path=data_path,
             save_outputs_dir=None,
             split_indices=split_indices,
             random_state=seed,
+            save_artifacts=True,
+            artifact_dir=os.path.join(
+                output_dir,
+                "artifacts",
+                f"fold_{int(fold_id):02d}_opening_{_fmt_float(test_opening)}",
+                "inverse_GRNN",
+            ),
+            save_test_slice=True,
+            artifact_extra={
+                "run_dir": output_dir.replace("\\", "/"),
+                "fold_id": int(fold_id),
+                "test_opening_mm": float(test_opening),
+                "train_val_openings_mm": fold_info["train_val_openings_label"],
+                "reference_output": {
+                    "path": pred_all_relpath,
+                    "filter_column": "fold_id",
+                    "filter_value": int(fold_id),
+                    "prediction_column": "inverse_GRNN_pred",
+                    "target_column": "true_speed_r_min",
+                },
+            },
         )
         kan_res = train_and_eval_inverse_kan_v2(
             data_path=data_path,
             seed=seed,
-            save_artifacts=False,
+            save_artifacts=True,
+            artifact_dir=os.path.join(
+                output_dir,
+                "artifacts",
+                f"fold_{int(fold_id):02d}_opening_{_fmt_float(test_opening)}",
+                "inverse_KAN",
+            ),
             save_outputs_dir=None,
             split_indices=split_indices,
+            save_test_slice=True,
+            artifact_extra={
+                "run_dir": output_dir.replace("\\", "/"),
+                "fold_id": int(fold_id),
+                "test_opening_mm": float(test_opening),
+                "train_val_openings_mm": fold_info["train_val_openings_label"],
+                "reference_output": {
+                    "path": pred_all_relpath,
+                    "filter_column": "fold_id",
+                    "filter_value": int(fold_id),
+                    "prediction_column": "inverse_KAN_pred",
+                    "target_column": "true_speed_r_min",
+                },
+            },
         )
 
         fold_results = {
@@ -415,6 +507,8 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
         df_fold_all, df_fold_main = _collect_fold_outputs(fold_info, fold_results)
         predictions_all.append(df_fold_all)
         predictions_main.append(df_fold_main)
+        for result in fold_results.values():
+            artifact_outputs.extend(_artifact_outputs_from_result(result, output_dir))
         print(f"Fold {fold_id}/{total_folds} done.", flush=True)
 
     df_metrics = pd.DataFrame(metrics_rows)
@@ -449,6 +543,7 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
         "all_path": all_path,
         "main_path": main_path,
         "tuning_audit_path": tuning_audit_path,
+        "artifact_outputs": artifact_outputs,
     }
 
 
@@ -484,6 +579,7 @@ def main():
                 "budget_profile": "high",
             },
         },
+        source_files=_artifact_source_files(),
     )
 
     print(f"\nRun directory: {run_dir}", flush=True)
@@ -501,6 +597,7 @@ def main():
         manifest_outputs.append(
             {"path": os.path.relpath(outputs["tuning_audit_path"], run_dir).replace("\\", "/")}
         )
+    manifest_outputs.extend(outputs["artifact_outputs"])
 
     append_manifest_outputs(run_dir, manifest_outputs)
 

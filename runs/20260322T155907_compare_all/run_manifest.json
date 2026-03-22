@@ -1,0 +1,72 @@
+{
+  "script_name": "compare_all.py",
+  "timestamp": "20260322T155907",
+  "run_dir": "runs/20260322T155907_compare_all",
+  "data": {
+    "path": "D:/Personal/eclipse_workspace/12.10/ComPare/data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "forward_models": [
+      "MLP",
+      "GRNN",
+      "KAN"
+    ],
+    "inverse_models": [
+      "inverse_MLP",
+      "inverse_GRNN",
+      "inverse_KAN"
+    ],
+    "save_root": "runs",
+    "policy": {
+      "label": "fixed_triplet_data_driven_thresholds_v1",
+      "target_openings_mm": [
+        20.0,
+        35.0,
+        50.0
+      ],
+      "threshold_low_mid": 3325.246337890625,
+      "threshold_mid_high": 5305.74169921875
+    },
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "code_version": {
+    "git_commit": "887167724afbb0c858129861d9267e1b51af05bc",
+    "git_branch": "master",
+    "git_dirty": true,
+    "source_file_hashes": {
+      "common_utils.py": "24b3d90f60ffd1ce989fa98dec34cf1c199f6851feccb72df1b4b4abef6d6e11",
+      "compare_all.py": "fbe4254ed053946d62744ab7b6ee495648518a291911e03c2f596d45022f956e",
+      "fair_tuning.py": "73be6fc7aab852d62ded522c7d82e43067060c4e3e7adcd60ffee2e6b7b3d4fe",
+      "inverse_grnn.py": "02d61e2af43e323cc9fb3bb3211e72ed3e7d49db20a320ba721533a783735684",
+      "inverse_kan.py": "b821920db71afbf6dc36978f417450edaed051adce70a98b942881b15541ab10",
+      "inverse_mlp.py": "faf6306734804c0341416f41775752529ddc19ea65b89a6d0d8bf9851831b682",
+      "policy_config.py": "aca05524543b15529d9392993680afbb7ff1287f7ceabe1f9078ec1a9bd66051",
+      "run_utils.py": "57554c7401e42247b95dd12f2197e4e16d37797b9b5a1bc8ac9adf3adc8d26f3",
+      "train_grnn.py": "8185d5734e8ae57b99c42e9e8c3e34cbe8b486174e9ec64272cbb3623fb2e057",
+      "train_kan.py": "f6c0acee08d0e66a51d09bf79d7f64519262b2effc69e127feac6f1636a49c3d",
+      "train_mlp.py": "dd99ab667726e1350e592a28a554f8424d4c01ff66537cbb0a683f947c1d1ed2"
+    }
+  },
+  "outputs": [],
+  "extra": {}
+}

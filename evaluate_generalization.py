@@ -22,6 +22,33 @@ SPEED_BLOCK_SIZE = 5
 MODEL_NAMES = ("MLP", "GRNN", "KAN")
 
 
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "train_mlp.py"),
+        os.path.join(base_dir, "train_grnn.py"),
+        os.path.join(base_dir, "train_kan.py"),
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
+
+
+def _artifact_outputs_from_result(result, run_dir):
+    outputs = []
+    for key in [
+        "artifact_model_path",
+        "artifact_meta_path",
+        "artifact_test_inputs_path",
+        "artifact_test_targets_path",
+    ]:
+        path = result.get(key)
+        if path:
+            outputs.append({"path": os.path.relpath(path, run_dir).replace("\\", "/")})
+    return outputs
+
+
 def _compact_protocol_meta(split_info):
     out = {}
     for k, v in split_info.items():
@@ -64,11 +91,15 @@ def _build_inner_tuning_spec(X, split_info):
     }
 
 
-def _run_model(model_name, data_path, seed, split_indices, inner_tuning_kwargs):
+def _run_model(model_name, data_path, seed, split_indices, inner_tuning_kwargs, *, artifact_dir, artifact_extra):
     common_kwargs = dict(
         data_path=data_path,
         split_indices=split_indices,
         save_csv_path=None,
+        save_artifacts=True,
+        artifact_dir=artifact_dir,
+        save_test_slice=True,
+        artifact_extra=artifact_extra,
         **inner_tuning_kwargs,
     )
     if model_name == "MLP":
@@ -84,13 +115,12 @@ def _run_model(model_name, data_path, seed, split_indices, inner_tuning_kwargs):
     if model_name == "KAN":
         return train_and_eval_kan(
             seed=seed,
-            save_artifacts=False,
             **common_kwargs,
         )
     raise ValueError(f"Unsupported model_name: {model_name}")
 
 
-def _run_one_protocol(name, split_info, data_path, seed, X):
+def _run_one_protocol(name, split_info, data_path, seed, X, run_dir, pred_relpath):
     split_indices = (
         split_info["idx_train"],
         split_info["idx_val"],
@@ -107,6 +137,19 @@ def _run_one_protocol(name, split_info, data_path, seed, X):
             seed,
             split_indices,
             inner_tuning_kwargs,
+            artifact_dir=os.path.join(run_dir, "artifacts", name, model_name),
+            artifact_extra={
+                "run_dir": run_dir.replace("\\", "/"),
+                "protocol": name,
+                "protocol_desc": split_info.get("description", ""),
+                "reference_output": {
+                    "path": pred_relpath,
+                    "filter_column": "protocol",
+                    "filter_value": name,
+                    "prediction_column": f"{model_name}_pred",
+                    "target_column": "true",
+                },
+            },
         )
 
     ref_model = next(iter(results.keys()))
@@ -151,7 +194,11 @@ def _run_one_protocol(name, split_info, data_path, seed, X):
             merged.update(tuning_row)
             tuning_rows.append(merged)
 
-    return pd.DataFrame(metrics_rows), pred_df, pd.DataFrame(tuning_rows)
+    artifact_outputs = []
+    for res in results.values():
+        artifact_outputs.extend(_artifact_outputs_from_result(res, run_dir))
+
+    return pd.DataFrame(metrics_rows), pred_df, pd.DataFrame(tuning_rows), artifact_outputs
 
 
 def _build_all_protocols(X, y, seed):
@@ -313,20 +360,32 @@ def main():
                 "speed_block_size": SPEED_BLOCK_SIZE,
             },
         },
+        source_files=_artifact_source_files(),
     )
 
     metrics_all = []
     preds_all = []
     tuning_all = []
+    artifact_outputs = []
+    pred_relpath = "protocol_predictions.csv"
 
     for name, split_info in protocols.items():
         print("\n" + "=" * 80)
         print(f"Running protocol: {name} | {split_info.get('description', '')}")
         print("=" * 80)
-        mdf, pdf, tdf = _run_one_protocol(name, split_info, data_path, seed, X)
+        mdf, pdf, tdf, protocol_artifacts = _run_one_protocol(
+            name,
+            split_info,
+            data_path,
+            seed,
+            X,
+            run_dir,
+            pred_relpath,
+        )
         metrics_all.append(mdf)
         preds_all.append(pdf)
         tuning_all.append(tdf)
+        artifact_outputs.extend(protocol_artifacts)
 
     df_metrics = _concat_nonempty_frames(metrics_all)
     df_preds = _concat_nonempty_frames(preds_all)
@@ -355,6 +414,7 @@ def main():
     ]
     if len(df_tuning) > 0:
         outputs.append({"path": "protocol_tuning_audit.csv"})
+    outputs.extend(artifact_outputs)
 
     append_manifest_outputs(run_dir, outputs)
     print(f"\nResults saved to: {run_dir}")

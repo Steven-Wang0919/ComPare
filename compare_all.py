@@ -32,6 +32,37 @@ from run_utils import (
 )
 
 
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "train_mlp.py"),
+        os.path.join(base_dir, "train_grnn.py"),
+        os.path.join(base_dir, "train_kan.py"),
+        os.path.join(base_dir, "inverse_mlp.py"),
+        os.path.join(base_dir, "inverse_grnn.py"),
+        os.path.join(base_dir, "inverse_kan.py"),
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "policy_config.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
+
+
+def _artifact_outputs_from_result(result, run_dir):
+    outputs = []
+    for key in [
+        "artifact_model_path",
+        "artifact_meta_path",
+        "artifact_test_inputs_path",
+        "artifact_test_targets_path",
+    ]:
+        path = result.get(key)
+        if path:
+            outputs.append({"path": os.path.relpath(path, run_dir).replace("\\", "/")})
+    return outputs
+
+
 def _to_1d_array(arr, name):
     out = np.asarray(arr).reshape(-1)
     if out.size == 0:
@@ -101,21 +132,54 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     print("开始正向模型对比：MLP / GRNN / KAN")
     print("=" * 72)
 
+    pred_path = os.path.join(output_dir, "forward_model_predictions.csv")
     mlp_res = train_and_eval_mlp(
         data_path=data_path,
         random_state=seed,
         save_csv_path=None,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "forward", "MLP"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(pred_path, output_dir).replace("\\", "/"),
+                "prediction_column": "MLP_pred",
+                "target_column": "true",
+            },
+        },
     )
     grnn_res = train_and_eval_grnn(
         data_path=data_path,
         save_csv_path=None,
         random_state=seed,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "forward", "GRNN"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(pred_path, output_dir).replace("\\", "/"),
+                "prediction_column": "GRNN_pred",
+                "target_column": "true",
+            },
+        },
     )
     kan_res = train_and_eval_kan(
         data_path=data_path,
         seed=seed,
         save_csv_path=None,
-        save_artifacts=False,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "forward", "KAN"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(pred_path, output_dir).replace("\\", "/"),
+                "prediction_column": "KAN_pred",
+                "target_column": "true",
+            },
+        },
     )
 
     metrics = [
@@ -183,7 +247,6 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "GRNN_pred": y_pred_grnn,
         "KAN_pred": y_pred_kan,
     })
-    pred_path = os.path.join(output_dir, "forward_model_predictions.csv")
     save_dataframe(df_pred, pred_path)
 
     tuning_audit_path = _save_tuning_audit(
@@ -204,6 +267,11 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "metrics_path": metrics_path,
         "pred_path": pred_path,
         "tuning_audit_path": tuning_audit_path,
+        "artifact_outputs": (
+            _artifact_outputs_from_result(mlp_res, output_dir)
+            + _artifact_outputs_from_result(grnn_res, output_dir)
+            + _artifact_outputs_from_result(kan_res, output_dir)
+        ),
     }
 
 
@@ -212,20 +280,53 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     print("开始反向模型对比：inverse_MLP / inverse_GRNN / inverse_KAN")
     print("=" * 72)
 
+    all_path = os.path.join(output_dir, "inverse_model_predictions_all.csv")
     mlp_res = train_and_eval_inverse_mlp(
         data_path=data_path,
         random_state=seed,
         save_outputs_dir=None,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_MLP"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(all_path, output_dir).replace("\\", "/"),
+                "prediction_column": "inverse_MLP_pred",
+                "target_column": "true_speed_r_min",
+            },
+        },
     )
     grnn_res = train_and_eval_inverse_grnn(
         data_path=data_path,
         save_outputs_dir=None,
         random_state=seed,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_GRNN"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(all_path, output_dir).replace("\\", "/"),
+                "prediction_column": "inverse_GRNN_pred",
+                "target_column": "true_speed_r_min",
+            },
+        },
     )
     kan_res = train_and_eval_inverse_kan_v2(
         data_path=data_path,
         seed=seed,
-        save_artifacts=False,
+        save_artifacts=True,
+        artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_KAN"),
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": output_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": os.path.relpath(all_path, output_dir).replace("\\", "/"),
+                "prediction_column": "inverse_KAN_pred",
+                "target_column": "true_speed_r_min",
+            },
+        },
     )
 
     y_true_all_mlp = _to_1d_array(mlp_res["y_true_all"], "inverse_MLP y_true_all")
@@ -342,7 +443,6 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "inverse_KAN_pred": y_pred_all_kan,
         "policy_match": policy_mask_mlp.astype(int),
     })
-    all_path = os.path.join(output_dir, "inverse_model_predictions_all.csv")
     save_dataframe(df_all, all_path)
 
     main_idx = np.where(policy_mask_mlp)[0]
@@ -378,6 +478,11 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         "all_path": all_path,
         "main_path": main_path,
         "tuning_audit_path": tuning_audit_path,
+        "artifact_outputs": (
+            _artifact_outputs_from_result(mlp_res, output_dir)
+            + _artifact_outputs_from_result(grnn_res, output_dir)
+            + _artifact_outputs_from_result(kan_res, output_dir)
+        ),
     }
 
 
@@ -409,6 +514,7 @@ def main():
                 "budget_profile": "high",
             },
         },
+        source_files=_artifact_source_files(),
     )
 
     print(f"\n本次运行目录：{run_dir}")
@@ -427,6 +533,8 @@ def main():
             {"path": os.path.relpath(inverse_outputs["all_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(inverse_outputs["main_path"], run_dir).replace("\\", "/")},
             {"path": os.path.relpath(inverse_outputs["tuning_audit_path"], run_dir).replace("\\", "/")},
+            *forward_outputs["artifact_outputs"],
+            *inverse_outputs["artifact_outputs"],
         ],
     )
 

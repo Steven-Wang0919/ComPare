@@ -2,13 +2,12 @@
 """
 inverse_kan.py
 
-Inverse KAN with a shared fair tuning protocol.
+Inverse KAN with a shared fair tuning protocol and replayable artifact bundles.
 """
 
-import json
+import gc
 import os
 import random
-import gc
 
 import numpy as np
 import pandas as pd
@@ -31,7 +30,18 @@ from fair_tuning import (
     run_fair_tuning,
     tuning_config_to_dict,
 )
-from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
+from run_utils import (
+    append_manifest_outputs,
+    build_artifact_metadata,
+    build_split_indices_payload,
+    build_tuning_protocol_payload,
+    create_run_dir,
+    ensure_dir,
+    save_dataframe,
+    save_test_slice,
+    write_json,
+    write_manifest,
+)
 from policy_config import (
     POLICY_LABEL,
     POLICY_LOW_MID_THRESHOLD,
@@ -40,10 +50,24 @@ from policy_config import (
     select_policy_opening,
 )
 
+
 EPS = 1e-8
 DEFAULT_HIDDEN_DIM_CANDIDATES = [8, 16, 32, 64]
 DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
 DEFAULT_WEIGHT_DECAY_CANDIDATES = [1e-4, 1e-5]
+MODEL_FILENAME = "model.pth"
+META_FILENAME = "meta.json"
+
+
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "policy_config.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
 
 
 def _cleanup_torch_runtime(*, model=None, tensors=None, device=None):
@@ -221,10 +245,6 @@ class InverseKANModel(nn.Module):
         return x
 
 
-def _to_list(arr):
-    return np.asarray(arr).tolist()
-
-
 def _build_candidate_configs(
     hidden_dim_candidates=None,
     lr_candidates=None,
@@ -261,8 +281,8 @@ def _prepare_inverse_arrays(X_train_raw, y_train_raw, X_eval_raw):
         "X_train": norm_x(X_train_raw),
         "X_eval": norm_x(X_eval_raw),
         "y_train": (y_train_raw - y_min) / (y_max - y_min + EPS),
-        "x_min": x_min,
-        "x_max": x_max,
+        "X_min": x_min,
+        "X_max": x_max,
         "y_min": y_min,
         "y_max": y_max,
     }
@@ -339,8 +359,8 @@ def _fit_predict_inverse_kan(
         "model": model,
         "y_pred_eval": y_pred_eval,
         "norm_stats": {
-            "X_min": arrays["x_min"],
-            "X_max": arrays["x_max"],
+            "X_min": arrays["X_min"],
+            "X_max": arrays["X_max"],
             "y_min": arrays["y_min"],
             "y_max": arrays["y_max"],
         },
@@ -352,47 +372,48 @@ def save_inverse_artifacts(
     model_path,
     meta_path,
     *,
-    seed,
     data_path,
-    hidden_dim,
-    lr,
-    weight_decay,
-    epochs,
-    best_val_r2,
-    x_min,
-    x_max,
-    y_min,
-    y_max,
+    best_config,
+    norm_stats,
     x_train_domain_raw,
     y_train_domain_raw,
     idx_tr,
     idx_val,
     idx_te,
+    tuning_config,
+    artifact_extra=None,
+    artifact_source_files=None,
+    x_test_raw=None,
+    y_test_raw=None,
+    save_test_slice_flag=False,
 ):
     torch.save(model.state_dict(), model_path)
+    test_inputs_path = None
+    test_targets_path = None
+    if save_test_slice_flag and x_test_raw is not None and y_test_raw is not None:
+        test_inputs_path, test_targets_path = save_test_slice(os.path.dirname(model_path), x_test_raw, y_test_raw)
 
-    meta = {
-        "artifact_type": "inverse_model_bundle",
-        "model_name": "KAN",
-        "model_class": "InverseKANModel",
-        "architecture_repair": True,
-        "weight_path": model_path.replace("\\", "/"),
-        "data_path": data_path,
-        "seed": int(seed),
-        "hyperparameters": {
-            "hidden_dim": int(hidden_dim),
-            "lr": float(lr),
-            "weight_decay": float(weight_decay),
-            "epochs": int(epochs),
-        },
-        "validation_result": {"best_val_r2": float(best_val_r2)},
-        "normalization_params": {
-            "X_min": _to_list(x_min),
-            "X_max": _to_list(x_max),
-            "y_min": float(y_min),
-            "y_max": float(y_max),
-        },
-        "training_domain": {
+    tuning_payload = build_tuning_protocol_payload(
+        tuning_config_to_dict(tuning_config),
+        inner_split_strategy="repeated_random",
+        inner_split_meta={},
+        tuning_seed=int(tuning_config.seed),
+        n_repeats=int(tuning_config.n_repeats),
+        inner_val_ratio=tuning_config.inner_val_ratio,
+    )
+    meta = build_artifact_metadata(
+        artifact_type="model_bundle",
+        task_name="inverse",
+        model_name="inverse_KAN",
+        model_class="inverse_kan.InverseKANModel",
+        data_path=data_path,
+        best_config=best_config,
+        normalization_params=norm_stats,
+        split_indices=build_split_indices_payload(idx_tr, idx_val, idx_te),
+        tuning_protocol=tuning_payload,
+        training_domain={
+            "feature_names": ["target_mass_g_min", "opening_mm"],
+            "target_name": "speed_r_min",
             "target_mass_min": float(x_train_domain_raw[:, 0].min()),
             "target_mass_max": float(x_train_domain_raw[:, 0].max()),
             "opening_min": float(x_train_domain_raw[:, 1].min()),
@@ -400,15 +421,23 @@ def save_inverse_artifacts(
             "speed_min": float(y_train_domain_raw.min()),
             "speed_max": float(y_train_domain_raw.max()),
         },
-        "split_info": {
-            "train_size": int(len(idx_tr)),
-            "val_size": int(len(idx_val)),
-            "test_size": int(len(idx_te)),
+        extra={
+            "model_file": os.path.basename(model_path),
+            "meta_file": os.path.basename(meta_path),
+            "test_inputs_file": os.path.basename(test_inputs_path) if test_inputs_path is not None else None,
+            "test_targets_file": os.path.basename(test_targets_path) if test_targets_path is not None else None,
+            "policy": {
+                "label": POLICY_LABEL,
+                "target_openings_mm": list(POLICY_TARGET_OPENINGS),
+                "threshold_low_mid": POLICY_LOW_MID_THRESHOLD,
+                "threshold_mid_high": POLICY_MID_HIGH_THRESHOLD,
+            },
+            **dict(artifact_extra or {}),
         },
-    }
-
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta, f, ensure_ascii=False, indent=2)
+        source_files=artifact_source_files or _artifact_source_files(),
+    )
+    write_json(meta_path, meta)
+    return test_inputs_path, test_targets_path
 
 
 def train_and_eval_inverse_kan_v2(
@@ -421,12 +450,15 @@ def train_and_eval_inverse_kan_v2(
     seed=42,
     save_artifacts=False,
     artifact_dir=None,
-    weight_filename="kan_inverse.pth",
-    meta_filename="kan_inverse_meta.json",
+    weight_filename=MODEL_FILENAME,
+    meta_filename=META_FILENAME,
     save_outputs_dir=None,
     split_indices=None,
     tuning_config=None,
     save_tuning_records_path=None,
+    save_test_slice=False,
+    artifact_extra=None,
+    artifact_source_files=None,
 ):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -465,7 +497,8 @@ def train_and_eval_inverse_kan_v2(
         weight_decay_candidates,
     )
 
-    def eval_candidate_fn(*, config, idx_train, idx_val, repeat_idx):
+    def eval_candidate_fn(*, config, idx_train, idx_val, fold_id, split_meta):
+        del split_meta
         res = _fit_predict_inverse_kan(
             X_dev_raw[idx_train],
             y_dev_raw[idx_train],
@@ -475,7 +508,7 @@ def train_and_eval_inverse_kan_v2(
             weight_decay=config["weight_decay"],
             epochs=epochs,
             device=device,
-            seed=int(tuning_config.seed) + repeat_idx,
+            seed=int(tuning_config.seed) + int(fold_id),
             return_model=False,
         )
         y_pred_val = res["y_pred_eval"]
@@ -572,33 +605,38 @@ def train_and_eval_inverse_kan_v2(
 
     model_path = None
     meta_path = None
+    artifact_test_inputs_path = None
+    artifact_test_targets_path = None
     if save_artifacts:
         if artifact_dir is None:
             raise ValueError("save_artifacts=True 时必须提供 artifact_dir")
         ensure_dir(artifact_dir)
         model_path = os.path.join(artifact_dir, weight_filename)
         meta_path = os.path.join(artifact_dir, meta_filename)
-        norm_stats = final_fit["norm_stats"]
-        save_inverse_artifacts(
+        artifact_test_inputs_path, artifact_test_targets_path = save_inverse_artifacts(
             model_final,
             model_path=model_path,
             meta_path=meta_path,
-            seed=seed,
             data_path=data_path,
-            hidden_dim=best_config["hidden_dim"],
-            lr=best_config["lr"],
-            weight_decay=best_config["weight_decay"],
-            epochs=epochs,
-            best_val_r2=best_summary["mean_val_r2"],
-            x_min=norm_stats["X_min"],
-            x_max=norm_stats["X_max"],
-            y_min=norm_stats["y_min"],
-            y_max=norm_stats["y_max"],
+            best_config={
+                "hidden_dim": int(best_config["hidden_dim"]),
+                "lr": float(best_config["lr"]),
+                "weight_decay": float(best_config["weight_decay"]),
+                "epochs": int(epochs),
+                "best_val_r2": float(best_summary["mean_val_r2"]),
+            },
+            norm_stats=final_fit["norm_stats"],
             x_train_domain_raw=X_dev_raw,
             y_train_domain_raw=y_dev_raw,
             idx_tr=idx_tr,
             idx_val=idx_val,
             idx_te=idx_te,
+            tuning_config=tuning_config,
+            artifact_extra=artifact_extra,
+            artifact_source_files=artifact_source_files,
+            x_test_raw=X_test_raw,
+            y_test_raw=y_test_speed_true,
+            save_test_slice_flag=save_test_slice,
         )
 
     _cleanup_torch_runtime(model=model_final, device=device)
@@ -632,8 +670,11 @@ def train_and_eval_inverse_kan_v2(
         "policy_mask": np.asarray(policy_mask),
         "opening_dist_all": opening_dist_all,
         "opening_dist_main": opening_dist_main,
+        "artifact_dir": artifact_dir,
         "artifact_model_path": model_path,
         "artifact_meta_path": meta_path,
+        "artifact_test_inputs_path": artifact_test_inputs_path,
+        "artifact_test_targets_path": artifact_test_targets_path,
         "tuning_protocol": tuning_config_to_dict(tuning_config),
         "trial_budget": int(tuning_config.n_candidates),
         "validation_repeats": int(tuning_config.n_repeats),
@@ -647,7 +688,7 @@ def train_and_eval_inverse_kan_v2(
 
 def main():
     run_dir = create_run_dir("inverse_kan")
-    artifact_dir = os.path.join(run_dir, "artifacts")
+    artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_KAN")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_kan.csv")
 
     write_manifest(
@@ -674,6 +715,7 @@ def main():
                 "budget_profile": "high",
             },
         },
+        source_files=_artifact_source_files(),
     )
 
     res = train_and_eval_inverse_kan_v2(
@@ -682,6 +724,15 @@ def main():
         save_artifacts=True,
         artifact_dir=artifact_dir,
         save_tuning_records_path=tuning_csv,
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": run_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": "inverse_kan_predictions_all.csv",
+                "prediction_column": "inverse_KAN_pred",
+                "target_column": "true_speed_r_min",
+            },
+        },
     )
 
     outputs = [
@@ -690,9 +741,13 @@ def main():
         {"path": "tuning_records_inverse_kan.csv"},
     ]
     if res["artifact_model_path"] is not None:
-        outputs.append({"path": "artifacts/kan_inverse.pth"})
+        outputs.append({"path": "artifacts/inverse/inverse_KAN/model.pth"})
     if res["artifact_meta_path"] is not None:
-        outputs.append({"path": "artifacts/kan_inverse_meta.json"})
+        outputs.append({"path": "artifacts/inverse/inverse_KAN/meta.json"})
+    if res["artifact_test_inputs_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_KAN/test_inputs.npy"})
+    if res["artifact_test_targets_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_KAN/test_targets.npy"})
 
     append_manifest_outputs(run_dir, outputs)
     print(f"\n本次运行目录：{run_dir}")

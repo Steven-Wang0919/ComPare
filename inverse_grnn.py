@@ -2,11 +2,12 @@
 """
 inverse_grnn.py
 
-Inverse GRNN with a shared fair tuning protocol.
+Inverse GRNN with a shared fair tuning protocol and replayable artifact bundles.
 """
 
 import os
 
+import joblib
 import numpy as np
 import pandas as pd
 from sklearn.metrics import r2_score
@@ -25,7 +26,18 @@ from fair_tuning import (
     run_fair_tuning,
     tuning_config_to_dict,
 )
-from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
+from run_utils import (
+    append_manifest_outputs,
+    build_artifact_metadata,
+    build_split_indices_payload,
+    build_tuning_protocol_payload,
+    create_run_dir,
+    ensure_dir,
+    save_dataframe,
+    save_test_slice,
+    write_json,
+    write_manifest,
+)
 from policy_config import (
     POLICY_LABEL,
     POLICY_LOW_MID_THRESHOLD,
@@ -34,8 +46,22 @@ from policy_config import (
     select_policy_opening,
 )
 
+
 EPS = 1e-8
 DEFAULT_SIGMA_GRID = np.linspace(0.10, 4.00, 24)
+MODEL_FILENAME = "model.joblib"
+META_FILENAME = "meta.json"
+
+
+def _artifact_source_files():
+    base_dir = os.path.dirname(__file__)
+    return [
+        __file__,
+        os.path.join(base_dir, "common_utils.py"),
+        os.path.join(base_dir, "fair_tuning.py"),
+        os.path.join(base_dir, "policy_config.py"),
+        os.path.join(base_dir, "run_utils.py"),
+    ]
 
 
 def select_optimal_opening(target_mass: float) -> float:
@@ -129,6 +155,7 @@ def _fit_predict_inverse_grnn(X_train_raw, y_train_raw, X_eval_raw, *, sigma):
     y_pred_eval = denorm_y(model.predict(norm_x(X_eval_raw)))
 
     return {
+        "model": model,
         "y_pred_eval": y_pred_eval,
         "norm_stats": {
             "X_min": x_min,
@@ -139,6 +166,84 @@ def _fit_predict_inverse_grnn(X_train_raw, y_train_raw, X_eval_raw, *, sigma):
     }
 
 
+def _save_inverse_grnn_artifacts(
+    *,
+    model,
+    artifact_dir,
+    data_path,
+    best_config,
+    norm_stats,
+    idx_tr,
+    idx_val,
+    idx_te,
+    tuning_config,
+    X_dev_raw,
+    y_dev_raw,
+    X_test_raw,
+    y_test_raw,
+    artifact_extra=None,
+    artifact_source_files=None,
+    model_filename=MODEL_FILENAME,
+    meta_filename=META_FILENAME,
+    save_test_slice_flag=False,
+):
+    ensure_dir(artifact_dir)
+    model_path = os.path.join(artifact_dir, model_filename)
+    meta_path = os.path.join(artifact_dir, meta_filename)
+    test_inputs_path = None
+    test_targets_path = None
+
+    joblib.dump(model, model_path)
+    if save_test_slice_flag:
+        test_inputs_path, test_targets_path = save_test_slice(artifact_dir, X_test_raw, y_test_raw)
+
+    tuning_payload = build_tuning_protocol_payload(
+        tuning_config_to_dict(tuning_config),
+        inner_split_strategy="repeated_random",
+        inner_split_meta={},
+        tuning_seed=int(tuning_config.seed),
+        n_repeats=int(tuning_config.n_repeats),
+        inner_val_ratio=tuning_config.inner_val_ratio,
+    )
+    meta = build_artifact_metadata(
+        artifact_type="model_bundle",
+        task_name="inverse",
+        model_name="inverse_GRNN",
+        model_class="inverse_grnn.InverseGRNN",
+        data_path=data_path,
+        best_config=best_config,
+        normalization_params=norm_stats,
+        split_indices=build_split_indices_payload(idx_tr, idx_val, idx_te),
+        tuning_protocol=tuning_payload,
+        training_domain={
+            "feature_names": ["target_mass_g_min", "opening_mm"],
+            "target_name": "speed_r_min",
+            "target_mass_min": float(X_dev_raw[:, 0].min()),
+            "target_mass_max": float(X_dev_raw[:, 0].max()),
+            "opening_min": float(X_dev_raw[:, 1].min()),
+            "opening_max": float(X_dev_raw[:, 1].max()),
+            "speed_min": float(y_dev_raw.min()),
+            "speed_max": float(y_dev_raw.max()),
+        },
+        extra={
+            "model_file": model_filename,
+            "meta_file": meta_filename,
+            "test_inputs_file": os.path.basename(test_inputs_path) if test_inputs_path is not None else None,
+            "test_targets_file": os.path.basename(test_targets_path) if test_targets_path is not None else None,
+            "policy": {
+                "label": POLICY_LABEL,
+                "target_openings_mm": list(POLICY_TARGET_OPENINGS),
+                "threshold_low_mid": POLICY_LOW_MID_THRESHOLD,
+                "threshold_mid_high": POLICY_MID_HIGH_THRESHOLD,
+            },
+            **dict(artifact_extra or {}),
+        },
+        source_files=artifact_source_files or _artifact_source_files(),
+    )
+    write_json(meta_path, meta)
+    return model_path, meta_path, test_inputs_path, test_targets_path
+
+
 def train_and_eval_inverse_grnn(
     data_path="data/dataset.xlsx",
     sigma_grid=None,
@@ -147,6 +252,13 @@ def train_and_eval_inverse_grnn(
     tuning_config=None,
     save_tuning_records_path=None,
     random_state=42,
+    save_artifacts=False,
+    artifact_dir=None,
+    model_filename=MODEL_FILENAME,
+    meta_filename=META_FILENAME,
+    save_test_slice=False,
+    artifact_extra=None,
+    artifact_source_files=None,
 ):
     print("\n=== 训练 反向 GRNN（公平调参协议） ===")
 
@@ -177,7 +289,8 @@ def train_and_eval_inverse_grnn(
     inner_splits = build_inner_repeated_splits(X_dev_raw, y_dev_raw, tuning_config)
     candidate_configs = _build_candidate_configs(sigma_grid)
 
-    def eval_candidate_fn(*, config, idx_train, idx_val, repeat_idx):
+    def eval_candidate_fn(*, config, idx_train, idx_val, fold_id, split_meta):
+        del split_meta
         res = _fit_predict_inverse_grnn(
             X_dev_raw[idx_train],
             y_dev_raw[idx_train],
@@ -208,6 +321,7 @@ def train_and_eval_inverse_grnn(
         sigma=best_config["sigma"],
     )
     pred_test_speed = final_fit["y_pred_eval"]
+    model_final = final_fit["model"]
 
     test_mass = y_raw[idx_te]
     test_opening = X_raw[idx_te, 0]
@@ -268,6 +382,39 @@ def train_and_eval_inverse_grnn(
     if save_tuning_records_path is not None:
         save_dataframe(pd.DataFrame(tuning_result["tuning_records"]), save_tuning_records_path)
 
+    artifact_model_path = None
+    artifact_meta_path = None
+    artifact_test_inputs_path = None
+    artifact_test_targets_path = None
+    if save_artifacts:
+        if artifact_dir is None:
+            raise ValueError("save_artifacts=True 时必须提供 artifact_dir")
+        (
+            artifact_model_path,
+            artifact_meta_path,
+            artifact_test_inputs_path,
+            artifact_test_targets_path,
+        ) = _save_inverse_grnn_artifacts(
+            model=model_final,
+            artifact_dir=artifact_dir,
+            data_path=data_path,
+            best_config={"sigma": float(best_config["sigma"])},
+            norm_stats=final_fit["norm_stats"],
+            idx_tr=idx_tr,
+            idx_val=idx_val,
+            idx_te=idx_te,
+            tuning_config=tuning_config,
+            X_dev_raw=X_dev_raw,
+            y_dev_raw=y_dev_raw,
+            X_test_raw=X_test_raw,
+            y_test_raw=y_test_speed_true,
+            artifact_extra=artifact_extra,
+            artifact_source_files=artifact_source_files,
+            model_filename=model_filename,
+            meta_filename=meta_filename,
+            save_test_slice_flag=save_test_slice,
+        )
+
     return {
         "r2_main": r2_main,
         "are_main": are_main,
@@ -299,12 +446,18 @@ def train_and_eval_inverse_grnn(
         "tuning_records": tuning_result["tuning_records"],
         "candidate_summaries": tuning_result["candidate_summaries"],
         "norm_stats": final_fit["norm_stats"],
+        "artifact_dir": artifact_dir,
+        "artifact_model_path": artifact_model_path,
+        "artifact_meta_path": artifact_meta_path,
+        "artifact_test_inputs_path": artifact_test_inputs_path,
+        "artifact_test_targets_path": artifact_test_targets_path,
     }
 
 
 def main():
     run_dir = create_run_dir("inverse_grnn")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_grnn.csv")
+    artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_GRNN")
 
     write_manifest(
         run_dir,
@@ -327,22 +480,40 @@ def main():
                 "budget_profile": "high",
             },
         },
+        source_files=_artifact_source_files(),
     )
 
-    train_and_eval_inverse_grnn(
+    res = train_and_eval_inverse_grnn(
         save_outputs_dir=run_dir,
         save_tuning_records_path=tuning_csv,
+        save_artifacts=True,
+        artifact_dir=artifact_dir,
+        save_test_slice=True,
+        artifact_extra={
+            "run_dir": run_dir.replace("\\", "/"),
+            "reference_output": {
+                "path": "inverse_grnn_predictions_all.csv",
+                "prediction_column": "inverse_GRNN_pred",
+                "target_column": "true_speed_r_min",
+            },
+        },
     )
 
-    append_manifest_outputs(
-        run_dir,
-        [
-            {"path": "inverse_grnn_predictions_all.csv"},
-            {"path": "inverse_grnn_predictions_main.csv"},
-            {"path": "tuning_records_inverse_grnn.csv"},
-        ],
-    )
+    outputs = [
+        {"path": "inverse_grnn_predictions_all.csv"},
+        {"path": "inverse_grnn_predictions_main.csv"},
+        {"path": "tuning_records_inverse_grnn.csv"},
+    ]
+    if res["artifact_model_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_GRNN/model.joblib"})
+    if res["artifact_meta_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_GRNN/meta.json"})
+    if res["artifact_test_inputs_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_GRNN/test_inputs.npy"})
+    if res["artifact_test_targets_path"] is not None:
+        outputs.append({"path": "artifacts/inverse/inverse_GRNN/test_targets.npy"})
 
+    append_manifest_outputs(run_dir, outputs)
     print(f"\n本次运行目录：{run_dir}")
 
 

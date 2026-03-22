@@ -1,0 +1,339 @@
+{
+  "script_name": "evaluate_inverse_opening_holdout.py",
+  "timestamp": "20260322T164835",
+  "run_dir": "runs/20260322T164835_evaluate_inverse_opening_holdout",
+  "data": {
+    "path": "D:/Personal/eclipse_workspace/12.10/ComPare/data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "protocol": "leave_one_opening_out_cv",
+    "fold_openings_mm": [
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0
+    ],
+    "n_folds": 7,
+    "val_ratio": 0.2,
+    "policy": {
+      "label": "fixed_triplet_data_driven_thresholds_v1",
+      "target_openings_mm": [
+        20.0,
+        35.0,
+        50.0
+      ],
+      "threshold_low_mid": 3325.246337890625,
+      "threshold_mid_high": 5305.74169921875
+    },
+    "note": "each fold holds out exactly one opening and evaluates all seven openings once",
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "code_version": {
+    "git_commit": "887167724afbb0c858129861d9267e1b51af05bc",
+    "git_branch": "master",
+    "git_dirty": true,
+    "source_file_hashes": {
+      "common_utils.py": "24b3d90f60ffd1ce989fa98dec34cf1c199f6851feccb72df1b4b4abef6d6e11",
+      "evaluate_inverse_opening_holdout.py": "27846f1dee9a5810f69d7bcd63feb3009274aba994dbaea1f3baf335eeb85c68",
+      "fair_tuning.py": "73be6fc7aab852d62ded522c7d82e43067060c4e3e7adcd60ffee2e6b7b3d4fe",
+      "inverse_grnn.py": "504e9c81a9369a41ca1b592fe35ed018c6bcc7610dee1e788e26534eeecfad70",
+      "inverse_kan.py": "37cd0d2143a3fb854f004d3a288e8ac830265d1d7455b346307b62d84c168c07",
+      "inverse_mlp.py": "9720b66ac0dbfebff00d03022ec34dafd7f4eb7485bba51be0708b6cdcb662f1",
+      "policy_config.py": "aca05524543b15529d9392993680afbb7ff1287f7ceabe1f9078ec1a9bd66051",
+      "run_utils.py": "57554c7401e42247b95dd12f2197e4e16d37797b9b5a1bc8ac9adf3adc8d26f3"
+    }
+  },
+  "outputs": [
+    {
+      "path": "inverse_opening_holdout_metrics.csv"
+    },
+    {
+      "path": "inverse_opening_holdout_summary.csv"
+    },
+    {
+      "path": "inverse_opening_holdout_predictions_all.csv"
+    },
+    {
+      "path": "inverse_opening_holdout_predictions_main.csv"
+    },
+    {
+      "path": "inverse_opening_holdout_tuning_audit.csv"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_01_opening_20/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_02_opening_25/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_03_opening_30/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_04_opening_35/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_05_opening_40/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_06_opening_45/inverse_KAN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_MLP/meta.json"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_MLP/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_GRNN/test_targets.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_KAN/model.pth"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_KAN/meta.json"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_KAN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/fold_07_opening_50/inverse_KAN/test_targets.npy"
+    }
+  ],
+  "extra": {}
+}

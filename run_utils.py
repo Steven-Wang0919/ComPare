@@ -2,7 +2,7 @@
 """
 run_utils.py
 
-统一管理运行目录、manifest、数据校验和、环境信息与 CSV 输出。
+Shared helpers for run directories, manifests, artifact bundles, and replay metadata.
 """
 
 import csv
@@ -10,11 +10,15 @@ import hashlib
 import json
 import os
 import platform
+import subprocess
 import sys
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
+
+
+ARTIFACT_SCHEMA_VERSION = 1
 
 
 def ensure_dir(path: str) -> str:
@@ -26,12 +30,41 @@ def now_timestamp() -> str:
     return datetime.now().strftime("%Y%m%dT%H%M%S")
 
 
+def _normalize_path(path: str) -> str:
+    return os.path.abspath(path).replace("\\", "/")
+
+
+def _repo_base_dir() -> str:
+    return os.path.abspath(os.path.dirname(__file__))
+
+
+def _relativize_path(path: str, *, base_dir: str = None) -> str:
+    abs_path = os.path.abspath(path)
+    base_dir = os.path.abspath(base_dir or _repo_base_dir())
+    try:
+        rel_path = os.path.relpath(abs_path, base_dir)
+        if not rel_path.startswith(".."):
+            return rel_path.replace("\\", "/")
+    except Exception:
+        pass
+    return abs_path.replace("\\", "/")
+
+
 def sha256_of_file(path: str) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def write_json(path: str, payload):
+    parent = os.path.dirname(path)
+    if parent:
+        ensure_dir(parent)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(jsonable(payload), f, ensure_ascii=False, indent=2)
+    return path
 
 
 def jsonable(obj):
@@ -45,6 +78,8 @@ def jsonable(obj):
         return int(obj)
     if isinstance(obj, (np.floating,)):
         return float(obj)
+    if isinstance(obj, (np.bool_,)):
+        return bool(obj)
     return obj
 
 
@@ -86,11 +121,146 @@ def get_env_info():
     return env
 
 
+def _run_git_command(args, cwd):
+    completed = subprocess.run(
+        args,
+        cwd=cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if completed.returncode != 0:
+        return None
+    return completed.stdout.strip()
+
+
+def get_code_version(source_files=None):
+    repo_dir = _repo_base_dir()
+    normalized_files = []
+    for path in list(source_files or []):
+        if path is None:
+            continue
+        abs_path = os.path.abspath(path)
+        if os.path.exists(abs_path):
+            normalized_files.append(abs_path)
+
+    source_file_hashes = {}
+    for abs_path in sorted(set(normalized_files)):
+        source_file_hashes[_relativize_path(abs_path, base_dir=repo_dir)] = sha256_of_file(abs_path)
+
+    git_commit = None
+    git_branch = None
+    git_dirty = None
+
+    inside_work_tree = _run_git_command(["git", "rev-parse", "--is-inside-work-tree"], repo_dir)
+    if inside_work_tree == "true":
+        git_commit = _run_git_command(["git", "rev-parse", "HEAD"], repo_dir)
+        git_branch = _run_git_command(["git", "rev-parse", "--abbrev-ref", "HEAD"], repo_dir)
+        status = _run_git_command(["git", "status", "--porcelain"], repo_dir)
+        if status is not None:
+            git_dirty = bool(status.strip())
+
+    return {
+        "git_commit": git_commit,
+        "git_branch": git_branch,
+        "git_dirty": git_dirty,
+        "source_file_hashes": source_file_hashes,
+    }
+
+
+def build_data_fingerprint(data_path: str):
+    abs_path = os.path.abspath(data_path)
+    exists = os.path.exists(abs_path)
+    return {
+        "path": _normalize_path(abs_path),
+        "sha256": sha256_of_file(abs_path) if exists else None,
+    }
+
+
 def create_run_dir(entrypoint: str, runs_root: str = "runs") -> str:
     ts = now_timestamp()
     run_dir = os.path.join(runs_root, f"{ts}_{entrypoint}")
     ensure_dir(run_dir)
     return run_dir
+
+
+def build_split_indices_payload(idx_train, idx_val, idx_test):
+    return {
+        "idx_train": np.asarray(idx_train, dtype=int).reshape(-1),
+        "idx_val": np.asarray(idx_val, dtype=int).reshape(-1),
+        "idx_test": np.asarray(idx_test, dtype=int).reshape(-1),
+    }
+
+
+def build_tuning_protocol_payload(
+    tuning_protocol,
+    *,
+    inner_split_strategy=None,
+    inner_split_meta=None,
+    inner_splits=None,
+    tuning_seed=None,
+    n_repeats=None,
+    inner_val_ratio=None,
+):
+    payload = dict(jsonable(tuning_protocol or {}))
+    payload["inner_split_strategy"] = inner_split_strategy
+    payload["inner_split_meta"] = jsonable(inner_split_meta or {})
+    payload["tuning_seed"] = tuning_seed
+    payload["n_repeats"] = n_repeats
+    payload["inner_val_ratio"] = inner_val_ratio
+    if inner_splits is not None:
+        payload["inner_splits"] = jsonable(inner_splits)
+    return payload
+
+
+def build_artifact_metadata(
+    *,
+    artifact_type,
+    task_name,
+    model_name,
+    model_class,
+    data_path,
+    best_config,
+    normalization_params,
+    split_indices,
+    tuning_protocol,
+    training_domain,
+    extra=None,
+    source_files=None,
+):
+    return {
+        "schema_version": int(ARTIFACT_SCHEMA_VERSION),
+        "artifact_type": artifact_type,
+        "task_name": task_name,
+        "model_name": model_name,
+        "model_class": model_class,
+        "data": build_data_fingerprint(data_path),
+        "code_version": get_code_version(source_files=source_files),
+        "best_config": jsonable(best_config or {}),
+        "normalization_params": jsonable(normalization_params or {}),
+        "split_indices": jsonable(split_indices or {}),
+        "tuning_protocol": jsonable(tuning_protocol or {}),
+        "training_domain": jsonable(training_domain or {}),
+        "extra": jsonable(extra or {}),
+    }
+
+
+def save_test_slice(
+    artifact_dir,
+    X_test,
+    y_test,
+    *,
+    x_filename="test_inputs.npy",
+    y_filename="test_targets.npy",
+):
+    ensure_dir(artifact_dir)
+    x_path = os.path.join(artifact_dir, x_filename)
+    y_path = os.path.join(artifact_dir, y_filename)
+    np.save(x_path, np.asarray(X_test))
+    np.save(y_path, np.asarray(y_test))
+    return x_path, y_path
 
 
 def write_manifest(
@@ -101,26 +271,31 @@ def write_manifest(
     seed=None,
     params=None,
     extra=None,
+    source_files=None,
 ):
+    script_path = script_name
+    if not os.path.isabs(script_path):
+        script_path = os.path.join(_repo_base_dir(), script_name)
+
+    resolved_source_files = list(source_files or [])
+    resolved_source_files.append(script_path)
+    resolved_source_files.append(__file__)
+
     manifest = {
         "script_name": script_name,
         "timestamp": os.path.basename(run_dir).split("_")[0],
         "run_dir": run_dir.replace("\\", "/"),
-        "data": {
-            "path": data_path.replace("\\", "/"),
-            "sha256": sha256_of_file(data_path) if os.path.exists(data_path) else None,
-        },
+        "data": build_data_fingerprint(data_path),
         "seed": seed,
         "params": jsonable(params or {}),
         "environment": jsonable(get_env_info()),
+        "code_version": get_code_version(source_files=resolved_source_files),
         "outputs": [],
         "extra": jsonable(extra or {}),
     }
 
     manifest_path = os.path.join(run_dir, "run_manifest.json")
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
-
+    write_json(manifest_path, manifest)
     return manifest_path
 
 
@@ -135,13 +310,13 @@ def append_manifest_outputs(run_dir: str, outputs):
     existing = list(manifest.get("outputs", []))
     for item in outputs:
         item = jsonable(item)
+        if item is None:
+            continue
         if item not in existing:
             existing.append(item)
 
     manifest["outputs"] = existing
-
-    with open(manifest_path, "w", encoding="utf-8") as f:
-        json.dump(manifest, f, ensure_ascii=False, indent=2)
+    write_json(manifest_path, manifest)
 
 
 def save_dataframe(df: pd.DataFrame, path: str):
