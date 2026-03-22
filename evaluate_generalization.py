@@ -11,33 +11,15 @@ import numpy as np
 import pandas as pd
 
 from common_utils import build_protocol_splits, load_data
+from fair_tuning import build_protocol_aligned_inner_splits
 from train_mlp import train_and_eval_mlp
 from train_grnn import train_and_eval_grnn
 from train_kan import train_and_eval_kan
 from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
 
 
-MODEL_RUNNERS = {
-    "MLP": lambda data_path, seed, split_indices: train_and_eval_mlp(
-        data_path=data_path,
-        random_state=seed,
-        split_indices=split_indices,
-        save_csv_path=None,
-    ),
-    "GRNN": lambda data_path, seed, split_indices: train_and_eval_grnn(
-        data_path=data_path,
-        split_indices=split_indices,
-        save_csv_path=None,
-        random_state=seed,
-    ),
-    "KAN": lambda data_path, seed, split_indices: train_and_eval_kan(
-        data_path=data_path,
-        seed=seed,
-        split_indices=split_indices,
-        save_csv_path=None,
-        save_artifacts=False,
-    ),
-}
+SPEED_BLOCK_SIZE = 5
+MODEL_NAMES = ("MLP", "GRNN", "KAN")
 
 
 def _compact_protocol_meta(split_info):
@@ -52,17 +34,80 @@ def _compact_protocol_meta(split_info):
     return out
 
 
-def _run_one_protocol(name, split_info, data_path, seed):
+def _protocol_family(protocol_name):
+    if protocol_name == "random_interp":
+        return "random_interp"
+    if str(protocol_name).startswith("leave_opening_"):
+        return "leave_one_opening_out"
+    if str(protocol_name).startswith("leave_speed_"):
+        return "leave_speed_block_out"
+    return "other"
+
+
+def _build_inner_tuning_spec(X, split_info):
+    protocol = str(split_info.get("protocol", ""))
+    if protocol == "random_stratified":
+        return "repeated_random", {}
+
+    dev_idx = np.sort(np.concatenate([split_info["idx_train"], split_info["idx_val"]]))
+    X_dev = np.asarray(X)[dev_idx]
+    inner_splits, inner_split_strategy, inner_split_meta = build_protocol_aligned_inner_splits(
+        X_dev,
+        split_info=split_info,
+        reference_X=X,
+        speed_block_size=SPEED_BLOCK_SIZE,
+    )
+    return inner_split_strategy, {
+        "inner_splits": inner_splits,
+        "inner_split_strategy": inner_split_strategy,
+        "inner_split_meta": inner_split_meta,
+    }
+
+
+def _run_model(model_name, data_path, seed, split_indices, inner_tuning_kwargs):
+    common_kwargs = dict(
+        data_path=data_path,
+        split_indices=split_indices,
+        save_csv_path=None,
+        **inner_tuning_kwargs,
+    )
+    if model_name == "MLP":
+        return train_and_eval_mlp(
+            random_state=seed,
+            **common_kwargs,
+        )
+    if model_name == "GRNN":
+        return train_and_eval_grnn(
+            random_state=seed,
+            **common_kwargs,
+        )
+    if model_name == "KAN":
+        return train_and_eval_kan(
+            seed=seed,
+            save_artifacts=False,
+            **common_kwargs,
+        )
+    raise ValueError(f"Unsupported model_name: {model_name}")
+
+
+def _run_one_protocol(name, split_info, data_path, seed, X):
     split_indices = (
         split_info["idx_train"],
         split_info["idx_val"],
         split_info["idx_test"],
     )
+    inner_split_strategy, inner_tuning_kwargs = _build_inner_tuning_spec(X, split_info)
 
     results = {}
-    for model_name, runner in MODEL_RUNNERS.items():
-        print(f"\n--- [{name}] 运行模型：{model_name} ---")
-        results[model_name] = runner(data_path, seed, split_indices)
+    for model_name in MODEL_NAMES:
+        print(f"\n--- [{name}] Running model: {model_name} ---")
+        results[model_name] = _run_model(
+            model_name,
+            data_path,
+            seed,
+            split_indices,
+            inner_tuning_kwargs,
+        )
 
     ref_model = next(iter(results.keys()))
     ref_res = results[ref_model]
@@ -88,6 +133,8 @@ def _run_one_protocol(name, split_info, data_path, seed):
             "train_size": len(split_info["idx_train"]),
             "val_size": len(split_info["idx_val"]),
             "test_size": len(split_info["idx_test"]),
+            "inner_split_strategy": res.get("inner_split_strategy", inner_split_strategy),
+            "inner_fold_count": res.get("inner_fold_count"),
         }
         for k, v in _compact_protocol_meta(split_info).items():
             if k in {"protocol", "description"}:
@@ -158,17 +205,7 @@ def _make_protocol_summary(df_metrics):
 
 def _make_protocol_family_summary(df_metrics):
     df = df_metrics.copy()
-
-    def family_name(p):
-        if p == "random_interp":
-            return "random_interp"
-        if str(p).startswith("leave_opening_"):
-            return "leave_one_opening_out"
-        if str(p).startswith("leave_speed_"):
-            return "leave_speed_block_out"
-        return "other"
-
-    df["protocol_family"] = df["protocol"].map(family_name)
+    df["protocol_family"] = df["protocol"].map(_protocol_family)
     return (
         df.groupby(["protocol_family", "model"], as_index=False)
         .agg(
@@ -231,6 +268,16 @@ def _make_speed_cv_summary(df_metrics):
     )
 
 
+def _concat_nonempty_frames(frames):
+    valid_frames = [
+        df for df in frames
+        if df is not None and isinstance(df, pd.DataFrame) and not df.empty
+    ]
+    if len(valid_frames) == 0:
+        return pd.DataFrame()
+    return pd.concat(valid_frames, ignore_index=True)
+
+
 def main():
     data_path = "data/dataset.xlsx"
     seed = 42
@@ -244,14 +291,26 @@ def main():
         data_path=data_path,
         seed=seed,
         params={
-            "models": list(MODEL_RUNNERS.keys()),
-            "protocols": {k: _compact_protocol_meta(v) for k, v in protocols.items()},
+            "models": list(MODEL_NAMES),
+            "protocols": {
+                k: {
+                    **_compact_protocol_meta(v),
+                    "inner_split_strategy": _build_inner_tuning_spec(X, v)[0],
+                }
+                for k, v in protocols.items()
+            },
             "fair_tuning": {
                 "n_candidates": 24,
                 "n_repeats": 5,
                 "selection_metric": "mean_val_r2",
                 "tie_break_metric": "mean_val_are",
                 "budget_profile": "high",
+                "random_interp_inner_protocol": "repeated_random",
+                "holdout_inner_protocols": {
+                    "leave_one_opening_out": "protocol_aligned_opening_cv",
+                    "leave_speed_block_out": "protocol_aligned_speed_block_cv",
+                },
+                "speed_block_size": SPEED_BLOCK_SIZE,
             },
         },
     )
@@ -262,16 +321,16 @@ def main():
 
     for name, split_info in protocols.items():
         print("\n" + "=" * 80)
-        print(f"运行协议：{name} | {split_info.get('description', '')}")
+        print(f"Running protocol: {name} | {split_info.get('description', '')}")
         print("=" * 80)
-        mdf, pdf, tdf = _run_one_protocol(name, split_info, data_path, seed)
+        mdf, pdf, tdf = _run_one_protocol(name, split_info, data_path, seed, X)
         metrics_all.append(mdf)
         preds_all.append(pdf)
         tuning_all.append(tdf)
 
-    df_metrics = pd.concat(metrics_all, ignore_index=True)
-    df_preds = pd.concat(preds_all, ignore_index=True)
-    df_tuning = pd.concat(tuning_all, ignore_index=True) if len(tuning_all) > 0 else pd.DataFrame()
+    df_metrics = _concat_nonempty_frames(metrics_all)
+    df_preds = _concat_nonempty_frames(preds_all)
+    df_tuning = _concat_nonempty_frames(tuning_all)
     df_protocol_summary = _make_protocol_summary(df_metrics)
     df_family_summary = _make_protocol_family_summary(df_metrics)
     df_opening_cv_summary = _make_opening_cv_summary(df_metrics)
@@ -298,7 +357,7 @@ def main():
         outputs.append({"path": "protocol_tuning_audit.csv"})
 
     append_manifest_outputs(run_dir, outputs)
-    print(f"\n结果目录：{run_dir}")
+    print(f"\nResults saved to: {run_dir}")
 
 
 if __name__ == "__main__":

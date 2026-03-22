@@ -19,9 +19,9 @@ from common_utils import (
     validate_predefined_split_indices,
 )
 from fair_tuning import (
-    build_inner_repeated_splits,
     ensure_fair_tuning_config,
     infer_inner_val_ratio,
+    prepare_inner_cv,
     run_fair_tuning,
     tuning_config_to_dict,
 )
@@ -100,6 +100,9 @@ def train_and_eval_grnn(
     tuning_config=None,
     save_tuning_records_path=None,
     random_state=42,
+    inner_splits=None,
+    inner_split_strategy=None,
+    inner_split_meta=None,
 ):
     print("\n=== 训练 GRNN（公平调参协议） ===")
 
@@ -111,7 +114,7 @@ def train_and_eval_grnn(
             len(X), split_indices[0], split_indices[1], split_indices[2]
         )
 
-    inner_val_ratio = infer_inner_val_ratio(idx_tr, idx_val)
+    inner_val_ratio = None if inner_splits is not None else infer_inner_val_ratio(idx_tr, idx_val)
     tuning_config = ensure_fair_tuning_config(
         tuning_config,
         seed=random_state,
@@ -124,10 +127,17 @@ def train_and_eval_grnn(
     X_test_raw = X[idx_te]
     y_test_raw = y[idx_te]
 
-    inner_splits = build_inner_repeated_splits(X_dev_raw, y_dev_raw, tuning_config)
+    inner_splits, inner_split_strategy, inner_split_meta = prepare_inner_cv(
+        X_dev_raw,
+        y_dev_raw,
+        tuning_config,
+        inner_splits=inner_splits,
+        inner_split_strategy=inner_split_strategy,
+        inner_split_meta=inner_split_meta,
+    )
     candidate_configs = _build_candidate_configs(sigma_grid)
 
-    def eval_candidate_fn(*, config, idx_train, idx_val, repeat_idx):
+    def eval_candidate_fn(*, config, idx_train, idx_val, fold_id, split_meta):
         res = _fit_predict_forward_grnn(
             X_dev_raw[idx_train],
             y_dev_raw[idx_train],
@@ -148,6 +158,8 @@ def train_and_eval_grnn(
         tuning_config=tuning_config,
         model_name="GRNN",
         task_name="forward",
+        inner_split_strategy=inner_split_strategy,
+        inner_split_meta=inner_split_meta,
     )
     best_config = tuning_result["best_config"]
 
@@ -193,9 +205,12 @@ def train_and_eval_grnn(
         "norm_stats": final_fit["norm_stats"],
         "tuning_protocol": tuning_config_to_dict(tuning_config),
         "trial_budget": int(tuning_config.n_candidates),
-        "validation_repeats": int(tuning_config.n_repeats),
+        "validation_repeats": int(tuning_result["inner_fold_count"]),
         "selection_metric": tuning_config.selection_metric,
         "tie_break_metric": tuning_config.tie_break_metric,
+        "inner_split_strategy": tuning_result["inner_split_strategy"],
+        "inner_split_meta": tuning_result["inner_split_meta"],
+        "inner_fold_count": int(tuning_result["inner_fold_count"]),
         "tuning_records": tuning_result["tuning_records"],
         "candidate_summaries": tuning_result["candidate_summaries"],
     }
