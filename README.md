@@ -63,9 +63,15 @@
 
 当前默认策略阈值：
 
-- `< 2800` -> `20 mm`
-- `2800 <= x < 4800` -> `35 mm`
-- `>= 4800` -> `50 mm`
+- `< 3325.246` -> `20 mm`
+- `3325.246 <= x < 5305.742` -> `35 mm`
+- `>= 5305.742` -> `50 mm`
+
+说明：
+
+- 策略开度三元组固定为 `20/35/50 mm`
+- 旧工程边界 `2800/4800 g/min` 作为历史对照保留
+- 当前默认运行时边界采用数据驱动学习结果
 
 ### 3.3 统一训练流程
 
@@ -108,7 +114,7 @@
 
 - `evaluate_generalization.py`：多协议泛化评估
 - `evaluate_inverse_opening_holdout.py`：反向开度留出评估
-- `select_opening_thresholds_research.py`：策略阈值研究脚本
+- `select_opening_thresholds_research.py`：固定 `20/35/50 mm` 三元组下的策略阈值研究脚本
 
 ### 4.4 公共模块
 
@@ -163,12 +169,24 @@ python plot_figures.py --run-dir runs/<timestamp>_compare_all
 ```bash
 python evaluate_generalization.py
 python evaluate_inverse_opening_holdout.py
+python select_opening_thresholds_research.py
 ```
 
 其中还会额外输出调参审计文件：
 
 - `protocol_tuning_audit.csv`
 - `inverse_opening_holdout_tuning_audit.csv`
+
+策略阈值研究脚本默认输出到：`runs/<timestamp>_opening_threshold_research/`
+
+典型文件：
+
+- `summary.json`
+- `triplet_ranking.csv`
+- `rule_comparison.csv`
+- `opening_models.csv`
+- `narrative_summary.md`
+- `figures/`
 
 ---
 
@@ -202,6 +220,7 @@ runs/<timestamp>_<entry>/
 - `python plot_figures.py`
 - `python evaluate_generalization.py`
 - `python evaluate_inverse_opening_holdout.py`
+- `python select_opening_thresholds_research.py`
 
 ### 7.2 变更说明
 

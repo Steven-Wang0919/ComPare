@@ -1,0 +1,66 @@
+{
+  "script_name": "select_opening_thresholds_research.py",
+  "timestamp": "manual",
+  "run_dir": "runs/manual_opening_threshold_research_check_2",
+  "data": {
+    "path": "data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "n_clusters": 3,
+    "reference_speed": 40.0,
+    "candidate_source": "observed",
+    "top_k": 20,
+    "engineering_thresholds": [
+      2800.0,
+      4800.0
+    ],
+    "engineering_triplet": [
+      20.0,
+      35.0,
+      50.0
+    ]
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "outputs": [
+    {
+      "path": "summary.json"
+    },
+    {
+      "path": "triplet_ranking.csv"
+    },
+    {
+      "path": "rule_comparison.csv"
+    },
+    {
+      "path": "opening_models.csv"
+    },
+    {
+      "path": "narrative_summary.md"
+    },
+    {
+      "path": "figures/mass_distribution_thresholds.png"
+    },
+    {
+      "path": "figures/opening_reachable_mass_ranges.png"
+    },
+    {
+      "path": "figures/current_vs_data_driven_rules.png"
+    }
+  ],
+  "extra": {
+    "notes": "Research script for validating the current opening policy and providing data-driven alternatives."
+  }
+}

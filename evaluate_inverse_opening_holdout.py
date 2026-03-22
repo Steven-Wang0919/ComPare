@@ -16,6 +16,12 @@ from common_utils import build_protocol_splits, load_data
 from inverse_mlp import train_and_eval_inverse_mlp
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
+from policy_config import (
+    POLICY_LABEL,
+    POLICY_LOW_MID_THRESHOLD,
+    POLICY_MID_HIGH_THRESHOLD,
+    POLICY_TARGET_OPENINGS,
+)
 from run_utils import (
     append_manifest_outputs,
     create_run_dir,
@@ -23,9 +29,6 @@ from run_utils import (
     write_manifest,
 )
 
-
-THRESHOLD_LOW_MID = 2800.0
-THRESHOLD_MID_HIGH = 4800.0
 VAL_RATIO = 0.2
 
 
@@ -466,8 +469,12 @@ def main():
             "fold_openings_mm": unique_openings,
             "n_folds": len(unique_openings),
             "val_ratio": VAL_RATIO,
-            "threshold_low_mid": THRESHOLD_LOW_MID,
-            "threshold_mid_high": THRESHOLD_MID_HIGH,
+            "policy": {
+                "label": POLICY_LABEL,
+                "target_openings_mm": list(POLICY_TARGET_OPENINGS),
+                "threshold_low_mid": POLICY_LOW_MID_THRESHOLD,
+                "threshold_mid_high": POLICY_MID_HIGH_THRESHOLD,
+            },
             "note": "each fold holds out exactly one opening and evaluates all seven openings once",
             "fair_tuning": {
                 "n_candidates": 24,

@@ -1,0 +1,3 @@
+﻿rule_name,threshold_source,low_mid_threshold,mid_high_threshold,low_opening,mid_opening,high_opening,low_estimated_mass,mid_estimated_mass,high_estimated_mass,rank_under_learned_thresholds,total_score_under_learned_thresholds,score_gap_vs_best,feasible_coverage_rate,zone_label_agreement_vs_kmeans,low_mid_deviation_vs_kmeans,mid_high_deviation_vs_kmeans
+current_engineering_rule,engineering_fixed,2800.0,4800.0,20.0,35.0,50.0,2295.884616758765,3891.760441477705,5541.412770341082,1,0.8384633617251313,0.0,1.0,0.7909407665505227,-525.246337890625,-505.74169921875
+data_driven_best_triplet,kmeans_learned,3325.246337890625,5305.74169921875,20.0,35.0,50.0,2295.884616758765,3891.760441477705,5541.412770341082,1,0.8384633617251313,0.0,,1.0,0.0,0.0

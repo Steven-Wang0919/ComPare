@@ -17,6 +17,12 @@ from train_kan import train_and_eval_kan
 from inverse_mlp import train_and_eval_inverse_mlp
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
+from policy_config import (
+    POLICY_LABEL,
+    POLICY_LOW_MID_THRESHOLD,
+    POLICY_MID_HIGH_THRESHOLD,
+    POLICY_TARGET_OPENINGS,
+)
 
 from run_utils import (
     append_manifest_outputs,
@@ -389,6 +395,12 @@ def main():
             "forward_models": ["MLP", "GRNN", "KAN"],
             "inverse_models": ["inverse_MLP", "inverse_GRNN", "inverse_KAN"],
             "save_root": "runs",
+            "policy": {
+                "label": POLICY_LABEL,
+                "target_openings_mm": list(POLICY_TARGET_OPENINGS),
+                "threshold_low_mid": POLICY_LOW_MID_THRESHOLD,
+                "threshold_mid_high": POLICY_MID_HIGH_THRESHOLD,
+            },
             "fair_tuning": {
                 "n_candidates": 24,
                 "n_repeats": 5,

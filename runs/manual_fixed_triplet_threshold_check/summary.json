@@ -1,0 +1,362 @@
+{
+  "config": {
+    "data_path": "data/dataset.xlsx",
+    "n_clusters": 3,
+    "reference_speed": 40.0,
+    "candidate_source": "observed",
+    "seed": 42,
+    "policy_label": "fixed_triplet_data_driven_thresholds_v1"
+  },
+  "data_overview": {
+    "sample_count": 287,
+    "observed_openings_mm": [
+      20.0,
+      25.0,
+      30.0,
+      35.0,
+      40.0,
+      45.0,
+      50.0
+    ],
+    "speed_range_r_min": [
+      20.0,
+      60.0
+    ],
+    "mass_range_g_min": [
+      1144.270263671875,
+      8234.0224609375
+    ]
+  },
+  "fixed_triplet_mm": [
+    20.0,
+    35.0,
+    50.0
+  ],
+  "opening_models": [
+    {
+      "opening": 20.0,
+      "slope": 57.74317182481081,
+      "intercept": -13.842256233667406,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 1144.270263671875,
+      "mass_max": 3452.63037109375,
+      "estimated_mass_at_reference_speed": 2295.884616758765,
+      "reference_speed": 40.0,
+      "r2": 0.9999718400400088,
+      "sample_count": 41
+    },
+    {
+      "opening": 25.0,
+      "slope": 70.70888569795297,
+      "intercept": -7.110566780541812,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 1415.7520751953125,
+      "mass_max": 4243.6396484375,
+      "estimated_mass_at_reference_speed": 2821.2448611375767,
+      "reference_speed": 40.0,
+      "r2": 0.9999675136399184,
+      "sample_count": 41
+    },
+    {
+      "opening": 30.0,
+      "slope": 83.59733778259064,
+      "intercept": 4.780790216000395,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 1679.7452392578125,
+      "mass_max": 5010.84423828125,
+      "estimated_mass_at_reference_speed": 3348.674301519626,
+      "reference_speed": 40.0,
+      "r2": 0.9999629093015643,
+      "sample_count": 41
+    },
+    {
+      "opening": 35.0,
+      "slope": 97.11658388995127,
+      "intercept": 7.097085879654505,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 1955.810546875,
+      "mass_max": 5827.92431640625,
+      "estimated_mass_at_reference_speed": 3891.760441477705,
+      "reference_speed": 40.0,
+      "r2": 0.9999729663621095,
+      "sample_count": 41
+    },
+    {
+      "opening": 40.0,
+      "slope": 110.48862432287129,
+      "intercept": 24.43808015298323,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 2228.5908203125,
+      "mass_max": 6640.93896484375,
+      "estimated_mass_at_reference_speed": 4443.983053067835,
+      "reference_speed": 40.0,
+      "r2": 0.9999586722550052,
+      "sample_count": 41
+    },
+    {
+      "opening": 45.0,
+      "slope": 123.62986809600936,
+      "intercept": 50.75548933607435,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 2522.22021484375,
+      "mass_max": 7445.9189453125,
+      "estimated_mass_at_reference_speed": 4995.950213176449,
+      "reference_speed": 40.0,
+      "r2": 0.9999578919067593,
+      "sample_count": 41
+    },
+    {
+      "opening": 50.0,
+      "slope": 136.6613495192046,
+      "intercept": 74.95878957289834,
+      "speed_min": 20.0,
+      "speed_max": 60.0,
+      "mass_min": 2799.788330078125,
+      "mass_max": 8234.0224609375,
+      "estimated_mass_at_reference_speed": 5541.412770341082,
+      "reference_speed": 40.0,
+      "r2": 0.9999063267247055,
+      "sample_count": 41
+    }
+  ],
+  "engineering_rule_validation": {
+    "rule_name": "engineering_fixed_thresholds",
+    "threshold_source": "engineering_fixed_thresholds",
+    "triplet": [
+      20.0,
+      35.0,
+      50.0
+    ],
+    "low_mid_threshold": 2800.0,
+    "mid_high_threshold": 4800.0,
+    "low_opening": 20.0,
+    "mid_opening": 35.0,
+    "high_opening": 50.0,
+    "low_estimated_mass": 2295.884616758765,
+    "mid_estimated_mass": 3891.760441477705,
+    "high_estimated_mass": 5541.412770341082,
+    "feasible_coverage_rate": 1.0,
+    "zone_label_agreement_vs_kmeans": 0.7909407665505227,
+    "low_mid_deviation_vs_kmeans": -525.246337890625,
+    "mid_high_deviation_vs_kmeans": -505.74169921875,
+    "zone_summaries": [
+      {
+        "threshold_source": "engineering_fixed_thresholds",
+        "zone": "low",
+        "assigned_opening_mm": 20.0,
+        "threshold_low_mid": 2800.0,
+        "threshold_mid_high": 4800.0,
+        "zone_mass_min": 1144.270263671875,
+        "zone_mass_max": 2800.0,
+        "zone_center": 1972.1351318359375,
+        "zone_width": 1655.729736328125,
+        "opening_mass_min": 1144.270263671875,
+        "opening_mass_max": 3452.63037109375,
+        "overlap_length": 1655.729736328125,
+        "coverage_ratio": 0.9999999999999994,
+        "reference_speed_mass": 2295.884616758765,
+        "reference_gap_to_zone_center": 323.7494849228274
+      },
+      {
+        "threshold_source": "engineering_fixed_thresholds",
+        "zone": "mid",
+        "assigned_opening_mm": 35.0,
+        "threshold_low_mid": 2800.0,
+        "threshold_mid_high": 4800.0,
+        "zone_mass_min": 2800.0,
+        "zone_mass_max": 4800.0,
+        "zone_center": 3800.0,
+        "zone_width": 2000.0,
+        "opening_mass_min": 1955.810546875,
+        "opening_mass_max": 5827.92431640625,
+        "overlap_length": 2000.0,
+        "coverage_ratio": 0.9999999999999996,
+        "reference_speed_mass": 3891.760441477705,
+        "reference_gap_to_zone_center": 91.76044147770517
+      },
+      {
+        "threshold_source": "engineering_fixed_thresholds",
+        "zone": "high",
+        "assigned_opening_mm": 50.0,
+        "threshold_low_mid": 2800.0,
+        "threshold_mid_high": 4800.0,
+        "zone_mass_min": 4800.0,
+        "zone_mass_max": 8234.0224609375,
+        "zone_center": 6517.01123046875,
+        "zone_width": 3434.0224609375,
+        "opening_mass_min": 2799.788330078125,
+        "opening_mass_max": 8234.0224609375,
+        "overlap_length": 3434.0224609375,
+        "coverage_ratio": 0.9999999999999998,
+        "reference_speed_mass": 5541.412770341082,
+        "reference_gap_to_zone_center": 975.5984601276677
+      }
+    ]
+  },
+  "learned_rule_validation": {
+    "rule_name": "kmeans_learned_thresholds",
+    "threshold_source": "kmeans_learned_thresholds",
+    "triplet": [
+      20.0,
+      35.0,
+      50.0
+    ],
+    "low_mid_threshold": 3325.246337890625,
+    "mid_high_threshold": 5305.74169921875,
+    "low_opening": 20.0,
+    "mid_opening": 35.0,
+    "high_opening": 50.0,
+    "low_estimated_mass": 2295.884616758765,
+    "mid_estimated_mass": 3891.760441477705,
+    "high_estimated_mass": 5541.412770341082,
+    "feasible_coverage_rate": 1.0,
+    "zone_label_agreement_vs_kmeans": 1.0,
+    "low_mid_deviation_vs_kmeans": 0.0,
+    "mid_high_deviation_vs_kmeans": 0.0,
+    "zone_summaries": [
+      {
+        "threshold_source": "kmeans_learned_thresholds",
+        "zone": "low",
+        "assigned_opening_mm": 20.0,
+        "threshold_low_mid": 3325.246337890625,
+        "threshold_mid_high": 5305.74169921875,
+        "zone_mass_min": 1144.270263671875,
+        "zone_mass_max": 3325.246337890625,
+        "zone_center": 2445.947159563912,
+        "zone_width": 2180.97607421875,
+        "opening_mass_min": 1144.270263671875,
+        "opening_mass_max": 3452.63037109375,
+        "overlap_length": 2180.97607421875,
+        "coverage_ratio": 0.9999999999999996,
+        "reference_speed_mass": 2295.884616758765,
+        "reference_gap_to_zone_center": 150.06254280514713
+      },
+      {
+        "threshold_source": "kmeans_learned_thresholds",
+        "zone": "mid",
+        "assigned_opening_mm": 35.0,
+        "threshold_low_mid": 3325.246337890625,
+        "threshold_mid_high": 5305.74169921875,
+        "zone_mass_min": 3325.246337890625,
+        "zone_mass_max": 5305.74169921875,
+        "zone_center": 4198.336430387677,
+        "zone_width": 1980.495361328125,
+        "opening_mass_min": 1955.810546875,
+        "opening_mass_max": 5827.92431640625,
+        "overlap_length": 1980.495361328125,
+        "coverage_ratio": 0.9999999999999996,
+        "reference_speed_mass": 3891.760441477705,
+        "reference_gap_to_zone_center": 306.5759889099718
+      },
+      {
+        "threshold_source": "kmeans_learned_thresholds",
+        "zone": "high",
+        "assigned_opening_mm": 50.0,
+        "threshold_low_mid": 3325.246337890625,
+        "threshold_mid_high": 5305.74169921875,
+        "zone_mass_min": 5305.74169921875,
+        "zone_mass_max": 8234.0224609375,
+        "zone_center": 6397.730601165254,
+        "zone_width": 2928.28076171875,
+        "opening_mass_min": 2799.788330078125,
+        "opening_mass_max": 8234.0224609375,
+        "overlap_length": 2928.28076171875,
+        "coverage_ratio": 0.9999999999999997,
+        "reference_speed_mass": 5541.412770341082,
+        "reference_gap_to_zone_center": 856.3178308241713
+      }
+    ]
+  },
+  "kmeans_thresholds": {
+    "low_mid_threshold": 3325.246337890625,
+    "mid_high_threshold": 5305.74169921875,
+    "cluster_centers": [
+      2445.947159563912,
+      4198.336430387677,
+      6397.730601165254
+    ],
+    "cluster_summary": [
+      {
+        "cluster": 0,
+        "center": 2445.947159563912,
+        "count": 122,
+        "mass_min": 1144.270263671875,
+        "mass_max": 3314.133544921875
+      },
+      {
+        "cluster": 1,
+        "center": 4198.336430387677,
+        "count": 106,
+        "mass_min": 3336.359130859375,
+        "mass_max": 5273.849609375
+      },
+      {
+        "cluster": 2,
+        "center": 6397.730601165254,
+        "count": 59,
+        "mass_min": 5337.6337890625,
+        "mass_max": 8234.0224609375
+      }
+    ],
+    "inertia": 109180062.07439362
+  },
+  "engineering_thresholds": {
+    "low_mid_threshold": 2800.0,
+    "mid_high_threshold": 4800.0
+  },
+  "gmm_sensitivity": {
+    "low_mid_threshold": 3363.171875,
+    "mid_high_threshold": 5234.072021484375,
+    "component_means": [
+      2523.9454719998043,
+      4109.30298223218,
+      6174.62477888398
+    ],
+    "component_variances": [
+      447000.8718219377,
+      566203.0959556573,
+      944557.9067094142
+    ],
+    "component_weights": [
+      0.4242342798460331,
+      0.34877028128769955,
+      0.22699543886626727
+    ],
+    "cluster_summary": [
+      {
+        "cluster": 0,
+        "center": 2523.9454719998043,
+        "count": 126,
+        "mass_min": 1144.270263671875,
+        "mass_max": 3345.266357421875,
+        "variance": 447000.8718219377,
+        "weight": 0.4242342798460331
+      },
+      {
+        "cluster": 1,
+        "center": 4109.30298223218,
+        "count": 99,
+        "mass_min": 3381.077392578125,
+        "mass_max": 5217.88916015625,
+        "variance": 566203.0959556573,
+        "weight": 0.34877028128769955
+      },
+      {
+        "cluster": 2,
+        "center": 6174.62477888398,
+        "count": 62,
+        "mass_min": 5250.2548828125,
+        "mass_max": 8234.0224609375,
+        "variance": 944557.9067094142,
+        "weight": 0.22699543886626727
+      }
+    ],
+    "lower_bound": -8.735193338679306
+  }
+}

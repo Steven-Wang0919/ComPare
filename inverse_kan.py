@@ -32,10 +32,14 @@ from fair_tuning import (
     tuning_config_to_dict,
 )
 from run_utils import append_manifest_outputs, create_run_dir, ensure_dir, save_dataframe, write_manifest
+from policy_config import (
+    POLICY_LABEL,
+    POLICY_LOW_MID_THRESHOLD,
+    POLICY_MID_HIGH_THRESHOLD,
+    POLICY_TARGET_OPENINGS,
+    select_policy_opening,
+)
 
-
-THRESHOLD_LOW_MID = 2800.0
-THRESHOLD_MID_HIGH = 4800.0
 EPS = 1e-8
 DEFAULT_HIDDEN_DIM_CANDIDATES = [8, 16, 32, 64]
 DEFAULT_LR_CANDIDATES = [1e-2, 5e-3, 1e-3]
@@ -85,11 +89,7 @@ def set_seed(seed=42):
 
 
 def select_optimal_opening(target_mass: float) -> float:
-    if target_mass < THRESHOLD_LOW_MID:
-        return 20.0
-    if target_mass < THRESHOLD_MID_HIGH:
-        return 35.0
-    return 50.0
+    return select_policy_opening(target_mass)
 
 
 def _safe_r2(y_true, y_pred):
@@ -110,7 +110,7 @@ def _safe_are(y_true, y_pred):
     return float(average_relative_error(y_true, y_pred))
 
 
-def _count_openings(openings, opening_values=(20.0, 35.0, 50.0), atol=0.1):
+def _count_openings(openings, opening_values=POLICY_TARGET_OPENINGS, atol=0.1):
     openings = np.asarray(openings, dtype=float)
     stats = {}
     for v in opening_values:
@@ -660,6 +660,12 @@ def main():
             "lr_candidates": DEFAULT_LR_CANDIDATES,
             "weight_decay_candidates": DEFAULT_WEIGHT_DECAY_CANDIDATES,
             "epochs": 1000,
+            "policy": {
+                "label": POLICY_LABEL,
+                "target_openings_mm": list(POLICY_TARGET_OPENINGS),
+                "threshold_low_mid": POLICY_LOW_MID_THRESHOLD,
+                "threshold_mid_high": POLICY_MID_HIGH_THRESHOLD,
+            },
             "fair_tuning": {
                 "n_candidates": 24,
                 "n_repeats": 5,
