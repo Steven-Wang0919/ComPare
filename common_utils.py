@@ -27,7 +27,7 @@ def average_relative_error(y_true, y_pred, eps=EPS):
     return float(np.mean(re))
 
 
-def load_data(path="data/dataset.xlsx"):
+def load_data_with_metadata(path="data/dataset.xlsx"):
     df = pd.read_excel(path)
     required_cols = ["排肥口开度（mm）", "排肥轴转速（r/min）", "实际排肥质量（g/min）"]
     for col in required_cols:
@@ -37,7 +37,33 @@ def load_data(path="data/dataset.xlsx"):
     y = df["实际排肥质量（g/min）"].values.astype(np.float32)
     if len(X) == 0:
         raise ValueError("数据为空，无法进行训练/评估")
+    sample_id = np.arange(len(df), dtype=int)
+    sample_meta = pd.DataFrame({
+        "sample_id": sample_id,
+        "source_row_number": sample_id + 2,
+    })
+    return X, y, sample_meta
+
+
+def load_data(path="data/dataset.xlsx"):
+    X, y, _ = load_data_with_metadata(path)
     return X, y
+
+
+def build_sample_tracking_columns(sample_meta, indices, *, include_legacy_sample_index=False):
+    sample_meta_df = pd.DataFrame(sample_meta).reset_index(drop=True)
+    if "sample_id" not in sample_meta_df.columns or "source_row_number" not in sample_meta_df.columns:
+        raise ValueError("sample_meta must include sample_id and source_row_number")
+
+    idx = np.asarray(indices, dtype=int).reshape(-1)
+    selected = sample_meta_df.iloc[idx]
+    payload = {
+        "sample_id": selected["sample_id"].to_numpy(dtype=int),
+        "source_row_number": selected["source_row_number"].to_numpy(dtype=int),
+    }
+    if include_legacy_sample_index:
+        payload["sample_index"] = payload["sample_id"].copy()
+    return payload
 
 
 def _bin_by_quantiles(values, n_bins=3):

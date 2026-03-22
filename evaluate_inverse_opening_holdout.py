@@ -12,7 +12,7 @@ import gc
 import numpy as np
 import pandas as pd
 
-from common_utils import build_protocol_splits, load_data
+from common_utils import build_protocol_splits, build_sample_tracking_columns, load_data_with_metadata
 from inverse_mlp import train_and_eval_inverse_mlp
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
@@ -24,6 +24,7 @@ from policy_config import (
 )
 from run_utils import (
     append_manifest_outputs,
+    build_multi_fold_split_artifact_payload,
     create_run_dir,
     save_dataframe,
     write_manifest,
@@ -172,7 +173,7 @@ def _build_opening_folds(X, y, seed):
     return unique_openings, folds
 
 
-def _collect_fold_outputs(fold_info, model_results):
+def _collect_fold_outputs(fold_info, model_results, sample_meta):
     mlp_res = model_results["inverse_MLP"]
     grnn_res = model_results["inverse_GRNN"]
     kan_res = model_results["inverse_KAN"]
@@ -233,7 +234,7 @@ def _collect_fold_outputs(fold_info, model_results):
         "fold_id": int(fold_info["fold_id"]),
         "test_opening_mm": float(fold_info["test_opening_mm"]),
         "train_val_openings_mm": fold_info["train_val_openings_label"],
-        "sample_index": test_indices,
+        **build_sample_tracking_columns(sample_meta, test_indices, include_legacy_sample_index=True),
         "target_mass_g_min": mass_all_mlp,
         "actual_opening_mm": opening_all_mlp,
         "strategy_opening_mm": strat_open_all_mlp,
@@ -253,7 +254,7 @@ def _collect_fold_outputs(fold_info, model_results):
         "fold_id": int(fold_info["fold_id"]),
         "test_opening_mm": float(fold_info["test_opening_mm"]),
         "train_val_openings_mm": fold_info["train_val_openings_label"],
-        "sample_index": test_indices[main_idx],
+        **build_sample_tracking_columns(sample_meta, test_indices[main_idx], include_legacy_sample_index=True),
         "target_mass_g_min": mass_all_mlp[main_idx],
         "actual_opening_mm": opening_all_mlp[main_idx],
         "strategy_opening_mm": strat_open_all_mlp[main_idx],
@@ -332,21 +333,34 @@ def _validate_cv_outputs(df_all, total_samples, expected_folds):
         raise ValueError(f"Expected {expected_folds} folds, got {observed_folds}")
     if len(df_all) != int(total_samples):
         raise ValueError(f"Expected {total_samples} prediction rows, got {len(df_all)}")
-    sample_indices = df_all["sample_index"].to_numpy(dtype=int)
-    unique_indices = np.unique(sample_indices)
+    sample_ids = df_all["sample_id"].to_numpy(dtype=int)
+    unique_indices = np.unique(sample_ids)
     if len(unique_indices) != int(total_samples):
         raise ValueError("Each sample must appear exactly once in predictions_all.")
-    if sample_indices.min() != 0 or sample_indices.max() != int(total_samples) - 1:
-        raise ValueError("Predictions_all sample_index range does not cover the full dataset.")
+    if sample_ids.min() != 0 or sample_ids.max() != int(total_samples) - 1:
+        raise ValueError("Predictions_all sample_id range does not cover the full dataset.")
 
 
-def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
+def run_inverse_opening_holdout_compare(
+    output_dir,
+    data_path="data/dataset.xlsx",
+    seed=42,
+    *,
+    X_raw=None,
+    y_raw=None,
+    sample_meta=None,
+    folds=None,
+):
     print("\n" + "=" * 72, flush=True)
     print("Inverse evaluation: leave-one-opening-out 7-fold CV", flush=True)
     print("=" * 72, flush=True)
 
-    X_raw, y_raw = load_data(data_path)
-    unique_openings, folds = _build_opening_folds(X_raw, y_raw, seed)
+    if X_raw is None or y_raw is None or sample_meta is None:
+        X_raw, y_raw, sample_meta = load_data_with_metadata(data_path)
+    if folds is None:
+        unique_openings, folds = _build_opening_folds(X_raw, y_raw, seed)
+    else:
+        unique_openings = _format_openings(np.unique(np.asarray(X_raw)[:, 0]))
 
     metrics_rows = []
     predictions_all = []
@@ -504,7 +518,7 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
                 merged.update(row)
                 tuning_rows.append(merged)
 
-        df_fold_all, df_fold_main = _collect_fold_outputs(fold_info, fold_results)
+        df_fold_all, df_fold_main = _collect_fold_outputs(fold_info, fold_results, sample_meta)
         predictions_all.append(df_fold_all)
         predictions_main.append(df_fold_main)
         for result in fold_results.values():
@@ -514,7 +528,7 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
     df_metrics = pd.DataFrame(metrics_rows)
     df_summary = _make_summary(df_metrics)
     df_all = pd.concat(predictions_all, ignore_index=True).sort_values(
-        ["sample_index", "fold_id"]
+        ["sample_id", "fold_id"]
     ).reset_index(drop=True)
     df_main = pd.concat(predictions_main, ignore_index=True)
     _validate_cv_outputs(df_all, total_samples=len(X_raw), expected_folds=total_folds)
@@ -550,8 +564,23 @@ def run_inverse_opening_holdout_compare(output_dir, data_path="data/dataset.xlsx
 def main():
     data_path = "data/dataset.xlsx"
     seed = 42
-    X_raw, _ = load_data(data_path)
+    X_raw, y_raw, sample_meta = load_data_with_metadata(data_path)
     unique_openings = _format_openings(np.unique(X_raw[:, 0]))
+    _, folds = _build_opening_folds(X_raw, y_raw, seed)
+    split_payload = build_multi_fold_split_artifact_payload(
+        [
+            {
+                "fold_id": fold_info["fold_id"],
+                "protocol": "leave_one_opening_out",
+                "test_opening_mm": fold_info["test_opening_mm"],
+                "train_val_openings_mm": fold_info["train_val_openings_mm"],
+                "train_val_openings_label": fold_info["train_val_openings_label"],
+                **fold_info["split_info"],
+            }
+            for fold_info in folds
+        ],
+        n_samples=len(X_raw),
+    )
     run_dir = create_run_dir("evaluate_inverse_opening_holdout")
 
     manifest_path = write_manifest(
@@ -580,12 +609,21 @@ def main():
             },
         },
         source_files=_artifact_source_files(),
+        split_payload=split_payload,
     )
 
     print(f"\nRun directory: {run_dir}", flush=True)
     print(f"Manifest: {manifest_path}", flush=True)
 
-    outputs = run_inverse_opening_holdout_compare(run_dir, data_path=data_path, seed=seed)
+    outputs = run_inverse_opening_holdout_compare(
+        run_dir,
+        data_path=data_path,
+        seed=seed,
+        X_raw=X_raw,
+        y_raw=y_raw,
+        sample_meta=sample_meta,
+        folds=folds,
+    )
 
     manifest_outputs = [
         {"path": os.path.relpath(outputs["metrics_path"], run_dir).replace("\\", "/")},

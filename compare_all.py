@@ -10,6 +10,7 @@ import os
 import numpy as np
 import pandas as pd
 
+from common_utils import get_train_val_test_indices, load_data_with_metadata
 from train_mlp import train_and_eval_mlp
 from train_grnn import train_and_eval_grnn
 from train_kan import train_and_eval_kan
@@ -26,6 +27,7 @@ from policy_config import (
 
 from run_utils import (
     append_manifest_outputs,
+    build_single_split_artifact_payload,
     create_run_dir,
     save_dataframe,
     write_manifest,
@@ -127,7 +129,7 @@ def _save_tuning_audit(output_dir, filename, model_results, extra_cols=None):
     return audit_path
 
 
-def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
+def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42, split_indices=None):
     print("\n" + "=" * 72)
     print("开始正向模型对比：MLP / GRNN / KAN")
     print("=" * 72)
@@ -137,6 +139,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         data_path=data_path,
         random_state=seed,
         save_csv_path=None,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "forward", "MLP"),
         save_test_slice=True,
@@ -153,6 +156,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         data_path=data_path,
         save_csv_path=None,
         random_state=seed,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "forward", "GRNN"),
         save_test_slice=True,
@@ -169,6 +173,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         data_path=data_path,
         seed=seed,
         save_csv_path=None,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "forward", "KAN"),
         save_test_slice=True,
@@ -240,8 +245,22 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
 
     _validate_same_values(y_true_mlp, y_true_grnn, "MLP y_true", "GRNN y_true")
     _validate_same_values(y_true_mlp, y_true_kan, "MLP y_true", "KAN y_true")
+    _validate_same_values(
+        mlp_res["test_sample_id"],
+        grnn_res["test_sample_id"],
+        "MLP sample_id",
+        "GRNN sample_id",
+    )
+    _validate_same_values(
+        mlp_res["test_sample_id"],
+        kan_res["test_sample_id"],
+        "MLP sample_id",
+        "KAN sample_id",
+    )
 
     df_pred = pd.DataFrame({
+        "sample_id": np.asarray(mlp_res["test_sample_id"], dtype=int),
+        "source_row_number": np.asarray(mlp_res["test_source_row_number"], dtype=int),
         "true": y_true_mlp,
         "MLP_pred": y_pred_mlp,
         "GRNN_pred": y_pred_grnn,
@@ -275,7 +294,7 @@ def run_forward_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     }
 
 
-def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
+def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42, split_indices=None):
     print("\n" + "=" * 72)
     print("开始反向模型对比：inverse_MLP / inverse_GRNN / inverse_KAN")
     print("=" * 72)
@@ -285,6 +304,7 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         data_path=data_path,
         random_state=seed,
         save_outputs_dir=None,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_MLP"),
         save_test_slice=True,
@@ -301,6 +321,7 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         data_path=data_path,
         save_outputs_dir=None,
         random_state=seed,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_GRNN"),
         save_test_slice=True,
@@ -316,6 +337,7 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     kan_res = train_and_eval_inverse_kan_v2(
         data_path=data_path,
         seed=seed,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=os.path.join(output_dir, "artifacts", "inverse", "inverse_KAN"),
         save_test_slice=True,
@@ -373,6 +395,18 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
         strat_open_all_kan,
         "inverse_MLP strategy_opening_all",
         "inverse_KAN strategy_opening_all",
+    )
+    _validate_same_values(
+        mlp_res["sample_id_all"],
+        grnn_res["sample_id_all"],
+        "inverse_MLP sample_id_all",
+        "inverse_GRNN sample_id_all",
+    )
+    _validate_same_values(
+        mlp_res["sample_id_all"],
+        kan_res["sample_id_all"],
+        "inverse_MLP sample_id_all",
+        "inverse_KAN sample_id_all",
     )
 
     _validate_same_mask(policy_mask_mlp, policy_mask_grnn, "inverse_MLP policy_mask", "inverse_GRNN policy_mask")
@@ -434,6 +468,8 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
     save_dataframe(df_metrics, metrics_path)
 
     df_all = pd.DataFrame({
+        "sample_id": np.asarray(mlp_res["sample_id_all"], dtype=int),
+        "source_row_number": np.asarray(mlp_res["source_row_number_all"], dtype=int),
         "target_mass_g_min": mass_all_mlp,
         "actual_opening_mm": opening_all_mlp,
         "strategy_opening_mm": strat_open_all_mlp,
@@ -447,6 +483,8 @@ def run_inverse_compare(output_dir, data_path="data/dataset.xlsx", seed=42):
 
     main_idx = np.where(policy_mask_mlp)[0]
     df_main = pd.DataFrame({
+        "sample_id": np.asarray(mlp_res["sample_id_all"], dtype=int)[main_idx],
+        "source_row_number": np.asarray(mlp_res["source_row_number_all"], dtype=int)[main_idx],
         "target_mass_g_min": mass_all_mlp[main_idx],
         "actual_opening_mm": opening_all_mlp[main_idx],
         "strategy_opening_mm": strat_open_all_mlp[main_idx],
@@ -490,6 +528,14 @@ def main():
     data_path = "data/dataset.xlsx"
     seed = 42
     run_dir = create_run_dir("compare_all")
+    X, y, _ = load_data_with_metadata(data_path)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
+    split_payload = build_single_split_artifact_payload(
+        split_indices[0],
+        split_indices[1],
+        split_indices[2],
+        n_samples=len(X),
+    )
 
     manifest_path = write_manifest(
         run_dir,
@@ -515,13 +561,24 @@ def main():
             },
         },
         source_files=_artifact_source_files(),
+        split_payload=split_payload,
     )
 
     print(f"\n本次运行目录：{run_dir}")
     print(f"Manifest：{manifest_path}")
 
-    forward_outputs = run_forward_compare(run_dir, data_path=data_path, seed=seed)
-    inverse_outputs = run_inverse_compare(run_dir, data_path=data_path, seed=seed)
+    forward_outputs = run_forward_compare(
+        run_dir,
+        data_path=data_path,
+        seed=seed,
+        split_indices=split_indices,
+    )
+    inverse_outputs = run_inverse_compare(
+        run_dir,
+        data_path=data_path,
+        seed=seed,
+        split_indices=split_indices,
+    )
 
     append_manifest_outputs(
         run_dir,

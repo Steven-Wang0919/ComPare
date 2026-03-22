@@ -1,0 +1,114 @@
+{
+  "script_name": "train_mlp.py",
+  "timestamp": "20260322T203645",
+  "run_dir": "runs/20260322T203645_train_mlp",
+  "data": {
+    "path": "D:/Personal/eclipse_workspace/12.10/ComPare/data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "hidden_layer_candidates": [
+      [
+        8
+      ],
+      [
+        16
+      ],
+      [
+        32
+      ],
+      [
+        16,
+        16
+      ],
+      [
+        32,
+        16
+      ],
+      [
+        32,
+        32
+      ]
+    ],
+    "alpha_candidates": [
+      1e-06,
+      1e-05,
+      0.0001,
+      0.001
+    ],
+    "max_iter": 5000,
+    "random_state": 42,
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "command": {
+    "argv": [
+      "train_mlp.py"
+    ],
+    "cwd": "D:/Personal/eclipse_workspace/12.10/ComPare",
+    "python_executable": "D:/ProgramData/miniconda3/envs/fertilizer_gpu/python.exe"
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "code_version": {
+    "git_commit": "e948248cf15b47e87d596535188c4fa338ea2f29",
+    "git_branch": "master",
+    "git_dirty": true,
+    "source_file_hashes": {
+      "common_utils.py": "f2bc3cfde052904b41e0fb29502bd5931dc5c10d2d10b4415ce4946b0ab8ef70",
+      "fair_tuning.py": "73be6fc7aab852d62ded522c7d82e43067060c4e3e7adcd60ffee2e6b7b3d4fe",
+      "run_utils.py": "f2fcc74ec62112a415660dd7512c0931dcf5dcef1d48a89636ab66a4b995d91d",
+      "train_mlp.py": "47ace434b2a6b6e7946a3d201994f2ceac0943a2d83ffc9b00f8928f0239b64b"
+    }
+  },
+  "sample_tracking": {
+    "sample_id_definition": "0-based row index after loading the original input table; stable only within the current input file, not a cross-dataset global key",
+    "source_row_number_definition": "1-based visible spreadsheet row number from the original input table, including header offset"
+  },
+  "artifacts": {
+    "split_indices": {
+      "path": "split_indices.json",
+      "sha256": "0d12356b1acc9e7ca3e7fd6832b219d5441617873ae6118ae02e14d567db255c",
+      "kind": "single_split",
+      "fold_count": 1,
+      "n_samples": 287
+    }
+  },
+  "outputs": [
+    {
+      "path": "results_mlp.csv"
+    },
+    {
+      "path": "tuning_records_mlp.csv"
+    },
+    {
+      "path": "artifacts/forward/MLP/model.joblib"
+    },
+    {
+      "path": "artifacts/forward/MLP/meta.json"
+    },
+    {
+      "path": "artifacts/forward/MLP/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/forward/MLP/test_targets.npy"
+    }
+  ],
+  "extra": {}
+}

@@ -18,9 +18,10 @@ from sklearn.metrics import r2_score
 
 from common_utils import (
     average_relative_error,
+    build_sample_tracking_columns,
     combine_train_val_indices,
     get_train_val_test_indices,
-    load_data,
+    load_data_with_metadata,
     validate_predefined_split_indices,
 )
 from fair_tuning import (
@@ -33,12 +34,14 @@ from fair_tuning import (
 from run_utils import (
     append_manifest_outputs,
     build_artifact_metadata,
+    build_single_split_artifact_payload,
     build_split_indices_payload,
     build_tuning_protocol_payload,
     create_run_dir,
     ensure_dir,
     save_dataframe,
     save_test_slice,
+    update_manifest_split_artifact,
     write_json,
     write_manifest,
 )
@@ -466,7 +469,7 @@ def train_and_eval_inverse_kan_v2(
     print("\n=== 训练 反向 KAN（公平调参协议） ===")
     print(f"使用设备: {device}")
 
-    X_raw, y_raw = load_data(data_path)
+    X_raw, y_raw, sample_meta = load_data_with_metadata(data_path)
     if split_indices is None:
         idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw, random_state=seed)
     else:
@@ -546,6 +549,13 @@ def train_and_eval_inverse_kan_v2(
 
     test_mass = y_raw[idx_te]
     test_opening = X_raw[idx_te, 0]
+    test_tracking = build_sample_tracking_columns(sample_meta, idx_te)
+    split_indices_payload = build_single_split_artifact_payload(
+        idx_tr,
+        idx_val,
+        idx_te,
+        n_samples=len(X_raw),
+    )
 
     r2_all = _safe_r2(y_test_speed_true, pred_test_speed)
     are_all = _safe_are(y_test_speed_true, pred_test_speed)
@@ -582,6 +592,7 @@ def train_and_eval_inverse_kan_v2(
 
     if save_outputs_dir is not None:
         df_all = pd.DataFrame({
+            **test_tracking,
             "target_mass_g_min": test_mass,
             "actual_opening_mm": test_opening,
             "strategy_opening_mm": strategy_opening_all,
@@ -592,6 +603,7 @@ def train_and_eval_inverse_kan_v2(
         save_dataframe(df_all, os.path.join(save_outputs_dir, "inverse_kan_predictions_all.csv"))
 
         df_main = pd.DataFrame({
+            **build_sample_tracking_columns(sample_meta, idx_te[policy_mask]),
             "target_mass_g_min": mass_main,
             "actual_opening_mm": opening_main,
             "strategy_opening_mm": strategy_opening_main,
@@ -657,6 +669,8 @@ def train_and_eval_inverse_kan_v2(
             "lr": float(best_config["lr"]),
             "weight_decay": float(best_config["weight_decay"]),
         },
+        "sample_id_all": test_tracking["sample_id"],
+        "source_row_number_all": test_tracking["source_row_number"],
         "y_true_all": np.asarray(y_test_speed_true),
         "y_pred_all": np.asarray(pred_test_speed),
         "mass_all": np.asarray(test_mass),
@@ -683,6 +697,7 @@ def train_and_eval_inverse_kan_v2(
         "tuning_records": tuning_result["tuning_records"],
         "candidate_summaries": tuning_result["candidate_summaries"],
         "norm_stats": final_fit["norm_stats"],
+        "split_indices_payload": split_indices_payload,
     }
 
 
@@ -690,11 +705,20 @@ def main():
     run_dir = create_run_dir("inverse_kan")
     artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_KAN")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_kan.csv")
+    data_path = "data/dataset.xlsx"
+    X, y, _ = load_data_with_metadata(data_path)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=42)
+    split_payload = build_single_split_artifact_payload(
+        split_indices[0],
+        split_indices[1],
+        split_indices[2],
+        n_samples=len(X),
+    )
 
     write_manifest(
         run_dir,
         script_name="inverse_kan.py",
-        data_path="data/dataset.xlsx",
+        data_path=data_path,
         seed=42,
         params={
             "hidden_dim_candidates": DEFAULT_HIDDEN_DIM_CANDIDATES,
@@ -716,11 +740,14 @@ def main():
             },
         },
         source_files=_artifact_source_files(),
+        split_payload=split_payload,
     )
 
     res = train_and_eval_inverse_kan_v2(
+        data_path=data_path,
         seed=42,
         save_outputs_dir=run_dir,
+        split_indices=split_indices,
         save_artifacts=True,
         artifact_dir=artifact_dir,
         save_tuning_records_path=tuning_csv,
@@ -734,6 +761,8 @@ def main():
             },
         },
     )
+
+    update_manifest_split_artifact(run_dir, split_payload=res["split_indices_payload"])
 
     outputs = [
         {"path": "inverse_kan_predictions_all.csv"},

@@ -10,12 +10,18 @@ import os
 import numpy as np
 import pandas as pd
 
-from common_utils import build_protocol_splits, load_data
+from common_utils import build_protocol_splits, build_sample_tracking_columns, load_data_with_metadata
 from fair_tuning import build_protocol_aligned_inner_splits
 from train_mlp import train_and_eval_mlp
 from train_grnn import train_and_eval_grnn
 from train_kan import train_and_eval_kan
-from run_utils import append_manifest_outputs, create_run_dir, save_dataframe, write_manifest
+from run_utils import (
+    append_manifest_outputs,
+    build_multi_fold_split_artifact_payload,
+    create_run_dir,
+    save_dataframe,
+    write_manifest,
+)
 
 
 SPEED_BLOCK_SIZE = 5
@@ -120,7 +126,7 @@ def _run_model(model_name, data_path, seed, split_indices, inner_tuning_kwargs, 
     raise ValueError(f"Unsupported model_name: {model_name}")
 
 
-def _run_one_protocol(name, split_info, data_path, seed, X, run_dir, pred_relpath):
+def _run_one_protocol(name, split_info, data_path, seed, X, sample_meta, run_dir, pred_relpath):
     split_indices = (
         split_info["idx_train"],
         split_info["idx_val"],
@@ -157,6 +163,7 @@ def _run_one_protocol(name, split_info, data_path, seed, X, run_dir, pred_relpat
 
     pred_df = pd.DataFrame({
         "protocol": name,
+        **build_sample_tracking_columns(sample_meta, split_info["idx_test"]),
         "opening": ref_res["x_test_raw"][:, 0],
         "speed": ref_res["x_test_raw"][:, 1],
         "true": ref_res["y_true"],
@@ -328,8 +335,20 @@ def _concat_nonempty_frames(frames):
 def main():
     data_path = "data/dataset.xlsx"
     seed = 42
-    X, y = load_data(data_path)
+    X, y, sample_meta = load_data_with_metadata(data_path)
     protocols = _build_all_protocols(X, y, seed)
+    split_payload = build_multi_fold_split_artifact_payload(
+        [
+            {
+                "fold_id": fold_id,
+                "protocol": name,
+                "protocol_name": name,
+                **split_info,
+            }
+            for fold_id, (name, split_info) in enumerate(protocols.items(), start=1)
+        ],
+        n_samples=len(X),
+    )
 
     run_dir = create_run_dir("evaluate_generalization")
     write_manifest(
@@ -361,6 +380,7 @@ def main():
             },
         },
         source_files=_artifact_source_files(),
+        split_payload=split_payload,
     )
 
     metrics_all = []
@@ -379,6 +399,7 @@ def main():
             data_path,
             seed,
             X,
+            sample_meta,
             run_dir,
             pred_relpath,
         )

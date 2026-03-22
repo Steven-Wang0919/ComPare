@@ -14,9 +14,10 @@ from sklearn.metrics import r2_score
 
 from common_utils import (
     average_relative_error,
+    build_sample_tracking_columns,
     combine_train_val_indices,
     get_train_val_test_indices,
-    load_data,
+    load_data_with_metadata,
     validate_predefined_split_indices,
 )
 from fair_tuning import (
@@ -29,12 +30,14 @@ from fair_tuning import (
 from run_utils import (
     append_manifest_outputs,
     build_artifact_metadata,
+    build_single_split_artifact_payload,
     build_split_indices_payload,
     build_tuning_protocol_payload,
     create_run_dir,
     ensure_dir,
     save_dataframe,
     save_test_slice,
+    update_manifest_split_artifact,
     write_json,
     write_manifest,
 )
@@ -215,7 +218,7 @@ def train_and_eval_grnn(
 ):
     print("\n=== 训练 GRNN（公平调参协议） ===")
 
-    X, y = load_data(data_path)
+    X, y, sample_meta = load_data_with_metadata(data_path)
     if split_indices is None:
         idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y, random_state=random_state)
     else:
@@ -235,6 +238,13 @@ def train_and_eval_grnn(
     y_dev_raw = y[dev_idx]
     X_test_raw = X[idx_te]
     y_test_raw = y[idx_te]
+    test_tracking = build_sample_tracking_columns(sample_meta, idx_te)
+    split_indices_payload = build_single_split_artifact_payload(
+        idx_tr,
+        idx_val,
+        idx_te,
+        n_samples=len(X),
+    )
 
     inner_splits, inner_split_strategy, inner_split_meta = prepare_inner_cv(
         X_dev_raw,
@@ -296,6 +306,7 @@ def train_and_eval_grnn(
 
     if save_csv_path is not None:
         df_out = pd.DataFrame({
+            **test_tracking,
             "true": y_test_raw,
             "GRNN_pred": y_pred_test,
         })
@@ -349,9 +360,12 @@ def train_and_eval_grnn(
         "are": grnn_are,
         "best_sigma": float(best_config["sigma"]),
         "best_config": {"sigma": float(best_config["sigma"])},
+        "test_sample_id": test_tracking["sample_id"],
+        "test_source_row_number": test_tracking["source_row_number"],
         "y_true": y_test_raw,
         "y_pred": y_pred_test,
         "x_test_raw": X_test_raw,
+        "split_indices_payload": split_indices_payload,
         "norm_stats": final_fit["norm_stats"],
         "tuning_protocol": tuning_config_to_dict(tuning_config),
         "trial_budget": int(tuning_config.n_candidates),
@@ -376,11 +390,20 @@ def main():
     output_csv = os.path.join(run_dir, "results_grnn.csv")
     tuning_csv = os.path.join(run_dir, "tuning_records_grnn.csv")
     artifact_dir = os.path.join(run_dir, "artifacts", "forward", "GRNN")
+    data_path = "data/dataset.xlsx"
+    X, y, _ = load_data_with_metadata(data_path)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=42)
+    split_payload = build_single_split_artifact_payload(
+        split_indices[0],
+        split_indices[1],
+        split_indices[2],
+        n_samples=len(X),
+    )
 
     write_manifest(
         run_dir,
         script_name="train_grnn.py",
-        data_path="data/dataset.xlsx",
+        data_path=data_path,
         seed=42,
         params={
             "sigma_grid": [float(x) for x in DEFAULT_SIGMA_GRID.tolist()],
@@ -393,10 +416,13 @@ def main():
             },
         },
         source_files=_artifact_source_files(),
+        split_payload=split_payload,
     )
 
     res = train_and_eval_grnn(
+        data_path=data_path,
         save_csv_path=output_csv,
+        split_indices=split_indices,
         save_tuning_records_path=tuning_csv,
         save_artifacts=True,
         artifact_dir=artifact_dir,
@@ -410,6 +436,8 @@ def main():
             },
         },
     )
+
+    update_manifest_split_artifact(run_dir, split_payload=res["split_indices_payload"])
 
     outputs = [
         {"path": "results_grnn.csv"},
