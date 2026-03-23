@@ -5,6 +5,7 @@ inverse_mlp.py
 Inverse MLP with a shared fair tuning protocol and replayable artifact bundles.
 """
 
+import argparse
 import os
 
 import joblib
@@ -482,13 +483,21 @@ def train_and_eval_inverse_mlp(
     }
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the inverse MLP baseline.")
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    seed = int(args.seed)
     run_dir = create_run_dir("inverse_mlp")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_mlp.csv")
     artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_MLP")
     data_path = "data/dataset.xlsx"
     X, y, _ = load_data_with_metadata(data_path)
-    split_indices = get_train_val_test_indices(X=X, y=y, random_state=42)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
     split_payload = build_single_split_artifact_payload(
         split_indices[0],
         split_indices[1],
@@ -500,12 +509,12 @@ def main():
         run_dir,
         script_name="inverse_mlp.py",
         data_path=data_path,
-        seed=42,
+        seed=seed,
         params={
             "hidden_layer_candidates": DEFAULT_HIDDEN_LAYER_CANDIDATES,
             "alpha_candidates": DEFAULT_ALPHA_CANDIDATES,
             "max_iter": 5000,
-            "random_state": 42,
+            "random_state": seed,
             "policy": {
                 "label": POLICY_LABEL,
                 "target_openings_mm": list(POLICY_TARGET_OPENINGS),
@@ -526,6 +535,7 @@ def main():
 
     res = train_and_eval_inverse_mlp(
         data_path=data_path,
+        random_state=seed,
         save_outputs_dir=run_dir,
         split_indices=split_indices,
         save_tuning_records_path=tuning_csv,

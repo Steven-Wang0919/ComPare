@@ -6,6 +6,7 @@ Inverse KAN with a shared fair tuning protocol and replayable artifact bundles.
 """
 
 import gc
+import argparse
 import os
 import random
 
@@ -701,13 +702,21 @@ def train_and_eval_inverse_kan_v2(
     }
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the inverse KAN baseline.")
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    seed = int(args.seed)
     run_dir = create_run_dir("inverse_kan")
     artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_KAN")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_kan.csv")
     data_path = "data/dataset.xlsx"
     X, y, _ = load_data_with_metadata(data_path)
-    split_indices = get_train_val_test_indices(X=X, y=y, random_state=42)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
     split_payload = build_single_split_artifact_payload(
         split_indices[0],
         split_indices[1],
@@ -719,7 +728,7 @@ def main():
         run_dir,
         script_name="inverse_kan.py",
         data_path=data_path,
-        seed=42,
+        seed=seed,
         params={
             "hidden_dim_candidates": DEFAULT_HIDDEN_DIM_CANDIDATES,
             "lr_candidates": DEFAULT_LR_CANDIDATES,
@@ -745,7 +754,7 @@ def main():
 
     res = train_and_eval_inverse_kan_v2(
         data_path=data_path,
-        seed=42,
+        seed=seed,
         save_outputs_dir=run_dir,
         split_indices=split_indices,
         save_artifacts=True,

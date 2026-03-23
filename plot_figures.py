@@ -122,6 +122,12 @@ def _build_metric_map(df_metrics, model_col, required_metric_cols, expected_mode
     return metric_maps
 
 
+def _optional_metric_map(df_metrics, model_col, metric_col):
+    if metric_col not in df_metrics.columns:
+        return {}
+    return dict(zip(df_metrics[model_col], df_metrics[metric_col]))
+
+
 def _find_latest_compare_all_run(runs_root="runs"):
     if not os.path.isdir(runs_root):
         return None
@@ -188,6 +194,8 @@ def _save_forward_plots(data_dir, pic_dir):
         expected_models=FORWARD_MODELS,
         df_name=os.path.basename(metrics_path),
     )
+    r2_std_map = _optional_metric_map(df_metrics, "Model", "R2_std")
+    are_std_map = _optional_metric_map(df_metrics, "Model", "ARE(%)_std")
 
     color_map = _build_color_map(FORWARD_MODELS)
     models = FORWARD_MODELS
@@ -195,8 +203,9 @@ def _save_forward_plots(data_dir, pic_dir):
     are_vals = [float(are_map[m]) for m in models]
     colors = [color_map[m] for m in models]
 
+    r2_err = [float(r2_std_map.get(m, 0.0) or 0.0) for m in models]
     plt.figure(figsize=(6, 5))
-    bars = plt.bar(models, r2_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black")
+    bars = plt.bar(models, r2_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black", yerr=r2_err, capsize=4)
 
     min_r2 = min(r2_vals)
     plt.ylim(min_r2 - (1 - min_r2) * 0.2, 1.005)
@@ -204,12 +213,12 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.title("Forward Model Comparison: $R^2$", fontsize=14, pad=15)
     plt.grid(axis="y", linestyle="--", alpha=0.5)
 
-    for bar in bars:
+    for idx, bar in enumerate(bars):
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2.0,
             height + 0.0002,
-            f"{height:.4f}",
+            f"{height:.4f}" if float(r2_std_map.get(models[idx], 0.0) or 0.0) == 0.0 else f"{height:.4f}\n±{float(r2_std_map.get(models[idx], 0.0)):.4f}",
             ha="center",
             va="bottom",
             fontsize=11,
@@ -221,8 +230,9 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.close()
     print("图表已保存: r2_comparison_zoomed.png")
 
+    are_err = [float(are_std_map.get(m, 0.0) or 0.0) for m in models]
     plt.figure(figsize=(6, 5))
-    bars = plt.bar(models, are_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black")
+    bars = plt.bar(models, are_vals, color=colors, alpha=0.8, width=0.6, edgecolor="black", yerr=are_err, capsize=4)
 
     max_are = max(are_vals)
     plt.ylim(0, max_are * 1.2)
@@ -230,12 +240,12 @@ def _save_forward_plots(data_dir, pic_dir):
     plt.title("Forward Model Comparison: ARE", fontsize=14, pad=15)
     plt.grid(axis="y", linestyle="--", alpha=0.5)
 
-    for bar in bars:
+    for idx, bar in enumerate(bars):
         height = bar.get_height()
         plt.text(
             bar.get_x() + bar.get_width() / 2.0,
             height + max_are * 0.02,
-            f"{height:.2f}%",
+            f"{height:.2f}%" if float(are_std_map.get(models[idx], 0.0) or 0.0) == 0.0 else f"{height:.2f}%\n±{float(are_std_map.get(models[idx], 0.0)):.2f}",
             ha="center",
             va="bottom",
             fontsize=11,
@@ -329,6 +339,8 @@ def _save_inverse_metric_barplot(df_metrics, metric_main_col, metric_all_col, yl
         expected_models=INVERSE_MODELS,
         df_name="inverse_model_metrics.csv",
     )
+    main_std_map = _optional_metric_map(df_metrics, "Model", f"{metric_main_col}_std")
+    all_std_map = _optional_metric_map(df_metrics, "Model", f"{metric_all_col}_std")
 
     x = np.arange(len(INVERSE_MODELS))
     width = 0.35
@@ -342,6 +354,8 @@ def _save_inverse_metric_barplot(df_metrics, metric_main_col, metric_all_col, yl
         color=[color_map[m] for m in INVERSE_MODELS],
         alpha=0.9,
         edgecolor="black",
+        yerr=[float(main_std_map.get(m, 0.0) or 0.0) for m in INVERSE_MODELS],
+        capsize=4,
     )
     bars2 = ax.bar(
         x + width / 2,
@@ -351,6 +365,8 @@ def _save_inverse_metric_barplot(df_metrics, metric_main_col, metric_all_col, yl
         color=[color_map[m] for m in INVERSE_MODELS],
         alpha=0.45,
         edgecolor="black",
+        yerr=[float(all_std_map.get(m, 0.0) or 0.0) for m in INVERSE_MODELS],
+        capsize=4,
     )
 
     ax.set_xticks(x)

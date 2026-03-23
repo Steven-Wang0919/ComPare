@@ -5,6 +5,7 @@ inverse_grnn.py
 Inverse GRNN with a shared fair tuning protocol and replayable artifact bundles.
 """
 
+import argparse
 import os
 
 import joblib
@@ -469,13 +470,21 @@ def train_and_eval_inverse_grnn(
     }
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train the inverse GRNN baseline.")
+    parser.add_argument("--seed", type=int, default=42)
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    seed = int(args.seed)
     run_dir = create_run_dir("inverse_grnn")
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_grnn.csv")
     artifact_dir = os.path.join(run_dir, "artifacts", "inverse", "inverse_GRNN")
     data_path = "data/dataset.xlsx"
     X, y, _ = load_data_with_metadata(data_path)
-    split_indices = get_train_val_test_indices(X=X, y=y, random_state=42)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
     split_payload = build_single_split_artifact_payload(
         split_indices[0],
         split_indices[1],
@@ -487,7 +496,7 @@ def main():
         run_dir,
         script_name="inverse_grnn.py",
         data_path=data_path,
-        seed=42,
+        seed=seed,
         params={
             "sigma_grid": [float(x) for x in DEFAULT_SIGMA_GRID.tolist()],
             "policy": {
@@ -514,6 +523,7 @@ def main():
         split_indices=split_indices,
         save_tuning_records_path=tuning_csv,
         save_artifacts=True,
+        random_state=seed,
         artifact_dir=artifact_dir,
         save_test_slice=True,
         artifact_extra={

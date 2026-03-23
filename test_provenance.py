@@ -7,8 +7,10 @@ from unittest import mock
 import numpy as np
 import pandas as pd
 
+import compare_all
 import common_utils
 import evaluate_inverse_opening_holdout
+import robustness_utils
 import run_utils
 import train_mlp
 
@@ -257,6 +259,86 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(df_all["sample_id"].tolist(), [0, 1, 2, 3])
             self.assertEqual(df_all["sample_index"].tolist(), [0, 1, 2, 3])
             self.assertEqual(df_all["source_row_number"].tolist(), [2, 3, 4, 5])
+
+    def test_pairwise_stats_use_metric_direction_consistently(self):
+        df = pd.DataFrame({
+            "protocol": ["p1", "p1", "p2", "p2"],
+            "fold_id": [1, 1, 1, 1],
+            "train_seed": [42, 42, 52, 52],
+            "outer_repeat_id": [1, 1, 1, 1],
+            "Model": ["A", "B", "A", "B"],
+            "R2": [0.90, 0.80, 0.95, 0.90],
+            "ARE(%)": [1.0, 2.0, 1.5, 2.5],
+        })
+        stats = robustness_utils.build_pairwise_stats(
+            df,
+            metric_specs=[
+                {"column": "R2", "higher_is_better": True},
+                {"column": "ARE(%)", "higher_is_better": False},
+            ],
+            model_col="Model",
+            pair_key_cols=["protocol", "fold_id", "train_seed", "outer_repeat_id"],
+            stats_seed=7,
+        )
+        r2_row = stats[stats["metric"] == "R2"].iloc[0]
+        are_row = stats[stats["metric"] == "ARE(%)"].iloc[0]
+        self.assertGreater(float(r2_row["mean_delta"]), 0.0)
+        self.assertGreater(float(are_row["mean_delta"]), 0.0)
+        self.assertEqual(r2_row["better_model_by_mean"], "A")
+        self.assertEqual(are_row["better_model_by_mean"], "A")
+
+    def test_compare_all_writes_replicate_and_summary_outputs(self):
+        replicates = [
+            {
+                "protocol": "random_interp",
+                "fold_id": 1,
+                "train_seed": 42,
+                "outer_repeat_id": 1,
+                "split_seed": 1001,
+                "replicate_id": "random_interp|fold=1|train_seed=42|outer_repeat_id=1",
+                "is_canonical_replicate": True,
+            },
+            {
+                "protocol": "random_interp",
+                "fold_id": 1,
+                "train_seed": 52,
+                "outer_repeat_id": 1,
+                "split_seed": 1001,
+                "replicate_id": "random_interp|fold=1|train_seed=52|outer_repeat_id=1",
+                "is_canonical_replicate": False,
+            },
+        ]
+
+        def fake_forward_once(output_dir, data_path, replicate):
+            del output_dir, data_path
+            base = 0.90 if replicate["train_seed"] == 42 else 0.80
+            metrics_df = compare_all._append_replicate_meta(pd.DataFrame([
+                {"Task": "forward", "Model": "MLP", "DisplayName": "MLP", "ArchitectureNote": "", "R2": base, "ARE(%)": 2.0, "n_test": 2, "Hyperparams": "h=1"},
+                {"Task": "forward", "Model": "GRNN", "DisplayName": "GRNN", "ArchitectureNote": "", "R2": base - 0.1, "ARE(%)": 3.0, "n_test": 2, "Hyperparams": "s=1"},
+                {"Task": "forward", "Model": "KAN", "DisplayName": "KAN", "ArchitectureNote": "", "R2": base + 0.05, "ARE(%)": 1.5, "n_test": 2, "Hyperparams": "k=1"},
+            ]), replicate)
+            pred_df = compare_all._append_replicate_meta(pd.DataFrame({
+                "sample_id": [0, 1],
+                "source_row_number": [2, 3],
+                "true": [1.0, 2.0],
+                "MLP_pred": [1.0, 2.0],
+                "GRNN_pred": [1.1, 2.1],
+                "KAN_pred": [0.9, 1.9],
+            }), replicate)
+            return {"metrics_df": metrics_df, "pred_df": pred_df, "tuning_rows": [], "artifact_outputs": []}
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with mock.patch.object(compare_all, "_run_forward_once", side_effect=fake_forward_once):
+                outputs = compare_all.run_forward_compare(tmpdir, "ignored.xlsx", replicates, 42)
+
+            df_repl = pd.read_csv(outputs["replicate_metrics_path"])
+            df_summary = pd.read_csv(outputs["metrics_path"])
+            df_pred = pd.read_csv(outputs["pred_path"])
+            self.assertEqual(len(df_repl), 6)
+            self.assertIn("R2_std", df_summary.columns)
+            self.assertIn("n_replicates", df_summary.columns)
+            self.assertEqual(df_pred["train_seed"].nunique(), 1)
+            self.assertEqual(df_pred["train_seed"].iloc[0], 42)
 
 
 if __name__ == "__main__":
