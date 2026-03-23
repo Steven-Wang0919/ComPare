@@ -1,0 +1,15 @@
+﻿sample_id,source_row_number,target_mass_g_min,actual_opening_mm,strategy_opening_mm,true_speed_r_min,inverse_MLP_pred,inverse_GRNN_pred,inverse_KAN_pred,protocol,fold_id,train_seed,outer_repeat_id,split_seed,replicate_id,is_canonical_replicate,canonical_replicate_rule
+0,2,1144.2703,20.0,20.0,20.0,20.58865292160122,29.268966690341486,20.210314,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+3,5,1317.2009,20.0,20.0,23.0,23.46497150077273,30.288705732321446,23.091206,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+15,17,2001.307,20.0,20.0,35.0,34.98086899201118,35.98920590734096,34.889603,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+16,18,2062.6792,20.0,20.0,36.0,36.03976487571214,36.62437426345846,35.957756,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+23,25,2474.9104,20.0,20.0,43.0,43.15226596910692,41.14658138326108,43.12314,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+29,31,2815.0046,20.0,20.0,49.0,49.02013964354252,44.78781502342132,49.0075,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+35,37,3161.7627,20.0,20.0,55.0,54.54539128091199,47.97519961075308,54.982494,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+146,148,4176.9893,35.0,35.0,43.0,42.64778827687697,43.091832401118396,42.934074,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+147,149,4284.7866,35.0,35.0,44.0,43.794480191128144,44.07213126185513,44.0428,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+154,156,4967.5664,35.0,35.0,51.0,51.05753196263264,49.47893003712601,51.080776,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+269,271,5975.8765,50.0,50.0,43.0,43.19113018318648,44.25321164248314,43.07105,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+278,280,7178.912,50.0,50.0,52.0,52.05690094662477,51.52674163689596,51.939667,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+280,282,7447.1846,50.0,50.0,54.0,54.033934232756565,52.92650224609955,53.965015,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
+286,288,8234.022,50.0,50.0,60.0,61.095560120705514,55.88618926418167,59.90066,random_interp,1,42,1,1001,random_interp|fold=1|train_seed=42|outer_repeat_id=1,1,first_train_seed_first_outer_repeat
