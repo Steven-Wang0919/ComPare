@@ -10,7 +10,11 @@ import json
 
 import numpy as np
 
-from common_utils import get_train_val_test_indices
+from common_utils import (
+    DEFAULT_STRATIFY_VIEW,
+    get_stratify_metadata,
+    get_train_val_test_indices,
+)
 
 
 DEFAULT_SELECTION_METRIC = "mean_val_r2"
@@ -197,7 +201,14 @@ def _contiguous_speed_runs(available_speed_values, reference_speed_values):
     return runs
 
 
-def build_inner_repeated_splits(X_dev, y_dev, tuning_config, use_stratify=True):
+def build_inner_repeated_splits(
+    X_dev,
+    y_dev,
+    tuning_config,
+    use_stratify=True,
+    *,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
+):
     splits = []
     for repeat_idx in range(int(tuning_config.n_repeats)):
         idx_train, idx_val, _ = get_train_val_test_indices(
@@ -207,6 +218,7 @@ def build_inner_repeated_splits(X_dev, y_dev, tuning_config, use_stratify=True):
             val_size=float(tuning_config.inner_val_ratio),
             random_state=int(tuning_config.seed) + repeat_idx,
             use_stratify=use_stratify,
+            stratify_view=stratify_view,
         )
         splits.append({
             "fold_id": int(repeat_idx),
@@ -351,8 +363,12 @@ def prepare_inner_cv(
     inner_split_strategy=None,
     inner_split_meta=None,
     use_stratify=True,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
 ):
-    resolved_meta = dict(inner_split_meta or {})
+    resolved_meta = {
+        **get_stratify_metadata(stratify_view),
+        **dict(inner_split_meta or {}),
+    }
     if inner_splits is None:
         if tuning_config.inner_val_ratio is None:
             raise ValueError("Repeated-random inner tuning requires tuning_config.inner_val_ratio.")
@@ -361,6 +377,7 @@ def prepare_inner_cv(
             y_dev,
             tuning_config,
             use_stratify=use_stratify,
+            stratify_view=stratify_view,
         )
         resolved_strategy = str(inner_split_strategy or "repeated_random")
         resolved_meta.setdefault("inner_val_ratio", float(tuning_config.inner_val_ratio))

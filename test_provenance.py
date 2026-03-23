@@ -10,12 +10,22 @@ import pandas as pd
 import compare_all
 import common_utils
 import evaluate_inverse_opening_holdout
+import fair_tuning
+import inverse_mlp
 import robustness_utils
 import run_utils
 import train_mlp
 
 
 class ProvenanceTests(unittest.TestCase):
+    @staticmethod
+    def _label_partition(labels):
+        labels = np.asarray(labels, dtype=object).reshape(-1)
+        return sorted(
+            tuple(np.where(labels == label)[0].tolist())
+            for label in np.unique(labels)
+        )
+
     def test_load_data_with_metadata_assigns_sample_tracking(self):
         df = pd.DataFrame({
             "排肥口开度（mm）": [20.0, 35.0],
@@ -48,6 +58,7 @@ class ProvenanceTests(unittest.TestCase):
                 [2],
                 [3],
                 n_samples=4,
+                extra=common_utils.get_stratify_metadata("forward"),
             )
             manifest_path = run_utils.write_manifest(
                 run_dir,
@@ -76,6 +87,113 @@ class ProvenanceTests(unittest.TestCase):
                 split_payload_on_disk = json.load(f)
             self.assertEqual(split_payload_on_disk["schema_version"], 1)
             self.assertEqual(split_payload_on_disk["kind"], "single_split")
+            self.assertEqual(split_payload_on_disk["stratify_view"], "forward")
+            self.assertEqual(
+                split_payload_on_disk["stratify_variable_mapping"],
+                common_utils.get_stratify_variable_mapping("forward"),
+            )
+
+    def test_stratify_views_preserve_current_dataset_partitions_and_indices(self):
+        data_path = os.path.join(os.path.dirname(__file__), "data", "dataset.xlsx")
+        X, y, _ = common_utils.load_data_with_metadata(data_path)
+        X_inv = np.stack([y, X[:, 0]], axis=1)
+        y_inv = X[:, 1]
+
+        forward_labels = common_utils.build_joint_stratify_labels_for_view(
+            X,
+            y,
+            stratify_view="forward",
+        )
+        inverse_labels = common_utils.build_joint_stratify_labels_for_view(
+            X_inv,
+            y_inv,
+            stratify_view="inverse",
+        )
+        physical_labels = common_utils.build_joint_stratify_labels_for_view(
+            X,
+            y,
+            stratify_view="physical_joint",
+        )
+        physical_labels_from_inverse_tensors = common_utils.build_joint_stratify_labels_for_view(
+            X_inv,
+            y_inv,
+            stratify_view="physical_joint",
+            raw_X=X,
+            raw_y=y,
+        )
+
+        self.assertEqual(
+            self._label_partition(forward_labels),
+            self._label_partition(inverse_labels),
+        )
+        self.assertEqual(
+            self._label_partition(physical_labels),
+            self._label_partition(physical_labels_from_inverse_tensors),
+        )
+        self.assertNotEqual(
+            common_utils.get_stratify_variable_mapping("forward"),
+            common_utils.get_stratify_variable_mapping("physical_joint"),
+        )
+
+        for seed in [7, 42, 1001]:
+            idx_forward = common_utils.get_train_val_test_indices(
+                X=X,
+                y=y,
+                random_state=seed,
+                stratify_view="forward",
+            )
+            idx_inverse = common_utils.get_train_val_test_indices(
+                X=X_inv,
+                y=y_inv,
+                random_state=seed,
+                stratify_view="inverse",
+            )
+            idx_physical = common_utils.get_train_val_test_indices(
+                X=X_inv,
+                y=y_inv,
+                random_state=seed,
+                stratify_view="physical_joint",
+                raw_X=X,
+                raw_y=y,
+            )
+            for arr_forward, arr_inverse, arr_physical in zip(idx_forward, idx_inverse, idx_physical):
+                self.assertTrue(np.array_equal(arr_forward, arr_inverse))
+                self.assertTrue(np.array_equal(arr_forward, arr_physical))
+
+        tuning_config = fair_tuning.default_fair_tuning_config(seed=11, inner_val_ratio=0.2)
+        inner_forward = fair_tuning.build_inner_repeated_splits(
+            X,
+            y,
+            tuning_config,
+            stratify_view="forward",
+        )
+        inner_inverse = fair_tuning.build_inner_repeated_splits(
+            X_inv,
+            y_inv,
+            tuning_config,
+            stratify_view="inverse",
+        )
+        self.assertEqual(len(inner_forward), len(inner_inverse))
+        for split_forward, split_inverse in zip(inner_forward, inner_inverse):
+            self.assertTrue(np.array_equal(split_forward["idx_train"], split_inverse["idx_train"]))
+            self.assertTrue(np.array_equal(split_forward["idx_val"], split_inverse["idx_val"]))
+
+    def test_compare_all_replicate_payload_marks_physical_joint_view(self):
+        data_path = os.path.join(os.path.dirname(__file__), "data", "dataset.xlsx")
+        X, y, _ = common_utils.load_data_with_metadata(data_path)
+        replicates, split_payload_folds = compare_all._build_compare_replicates(
+            X,
+            y,
+            training_seeds=[42],
+            outer_repeats=1,
+            primary_seed=42,
+        )
+        self.assertEqual(len(replicates), 1)
+        self.assertEqual(split_payload_folds[0]["stratify_view"], "physical_joint")
+        self.assertEqual(
+            split_payload_folds[0]["stratify_variable_mapping"],
+            common_utils.get_stratify_variable_mapping("physical_joint"),
+        )
 
     def test_train_and_eval_mlp_writes_sample_tracking_columns(self):
         X = np.array(
@@ -138,6 +256,68 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(df["source_row_number"].tolist(), [6, 7])
             self.assertEqual(result["split_indices_payload"]["kind"], "single_split")
             self.assertEqual(result["split_indices_payload"]["fold_count"], 1)
+            self.assertEqual(result["split_indices_payload"]["stratify_view"], "forward")
+
+    def test_inverse_mlp_uses_inverse_inner_view_and_payload_metadata(self):
+        X_raw = np.array(
+            [
+                [20.0, 21.0],
+                [20.0, 22.0],
+                [35.0, 31.0],
+                [35.0, 32.0],
+                [50.0, 41.0],
+                [50.0, 42.0],
+            ],
+            dtype=np.float32,
+        )
+        y_raw = np.array([100.0, 110.0, 200.0, 210.0, 300.0, 310.0], dtype=np.float32)
+        sample_meta = pd.DataFrame({
+            "sample_id": np.arange(len(X_raw), dtype=int),
+            "source_row_number": np.arange(len(X_raw), dtype=int) + 2,
+        })
+        dummy_inner_splits = [{
+            "fold_id": 0,
+            "idx_train": np.array([0, 1, 2]),
+            "idx_val": np.array([3, 4]),
+            "split_meta": {"repeat_idx": 0},
+        }]
+        fake_tuning_result = {
+            "best_config": {"hidden_layer_sizes": (2,), "alpha": 1e-4},
+            "best_candidate_idx": 0,
+            "candidate_summaries": [{"mean_val_r2": 0.5}],
+            "tuning_records": [],
+        }
+
+        def fake_fit(X_train_raw, y_train_raw, X_eval_raw, **kwargs):
+            del kwargs
+            return {
+                "model": "dummy-inverse-mlp",
+                "y_pred_eval": np.full(len(X_eval_raw), float(np.mean(y_train_raw)), dtype=float),
+                "norm_stats": {
+                    "X_min": np.min(X_train_raw, axis=0, keepdims=True),
+                    "X_max": np.max(X_train_raw, axis=0, keepdims=True),
+                    "y_min": float(np.min(y_train_raw)),
+                    "y_max": float(np.max(y_train_raw)),
+                },
+            }
+
+        with mock.patch.object(inverse_mlp, "load_data_with_metadata", return_value=(X_raw, y_raw, sample_meta)):
+            with mock.patch.object(inverse_mlp, "build_inner_repeated_splits", return_value=dummy_inner_splits) as mocked_inner:
+                with mock.patch.object(inverse_mlp, "run_fair_tuning", return_value=fake_tuning_result):
+                    with mock.patch.object(inverse_mlp, "_fit_predict_inverse_mlp", side_effect=fake_fit):
+                        result = inverse_mlp.train_and_eval_inverse_mlp(
+                            data_path="ignored.xlsx",
+                            hidden_layer_candidates=[(2,)],
+                            alpha_candidates=[1e-4],
+                            split_indices=(np.array([0, 1, 2]), np.array([3]), np.array([4, 5])),
+                        )
+
+        self.assertEqual(mocked_inner.call_args.kwargs["stratify_view"], "inverse")
+        self.assertEqual(result["split_indices_payload"]["stratify_view"], "inverse")
+        self.assertEqual(
+            result["split_indices_payload"]["stratify_variable_mapping"],
+            common_utils.get_stratify_variable_mapping("inverse"),
+        )
 
     def test_inverse_opening_holdout_outputs_sample_tracking_columns(self):
         X_raw = np.array(

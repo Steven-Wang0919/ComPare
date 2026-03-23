@@ -13,7 +13,12 @@ import sys
 import numpy as np
 import pandas as pd
 
-from common_utils import build_protocol_splits, build_sample_tracking_columns, load_data_with_metadata
+from common_utils import (
+    build_protocol_splits,
+    build_sample_tracking_columns,
+    get_stratify_metadata,
+    load_data_with_metadata,
+)
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
 from inverse_mlp import train_and_eval_inverse_mlp
@@ -186,6 +191,7 @@ def _build_opening_folds(X, y, train_seed):
             random_state=int(train_seed),
             val_size=VAL_RATIO,
             holdout_opening=opening,
+            stratify_view="inverse",
         )
         train_val_openings = [op for op in unique_openings if not np.isclose(op, opening, atol=1e-8)]
         folds.append({
@@ -329,6 +335,7 @@ def _build_replicate_jobs(X_raw, y_raw, training_seeds, primary_seed):
                 "outer_repeat_id": replicate["outer_repeat_id"],
                 "split_seed": replicate["split_seed"],
                 "replicate_id": replicate["replicate_id"],
+                **get_stratify_metadata("inverse"),
             })
             payload_fold_id += 1
     return unique_openings, jobs, split_payload_folds

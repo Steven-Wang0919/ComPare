@@ -1,0 +1,123 @@
+{
+  "script_name": "inverse_grnn.py",
+  "timestamp": "20260323T113802",
+  "run_dir": "runs/20260323T113802_inverse_grnn",
+  "data": {
+    "path": "D:/Personal/eclipse_workspace/12.10/ComPare/data/dataset.xlsx",
+    "sha256": "1a8da853d44ca14873d96eeeb899f4f4801ffd3089be64f4000022f561b39699"
+  },
+  "seed": 42,
+  "params": {
+    "sigma_grid": [
+      0.1,
+      0.26956521739130435,
+      0.4391304347826087,
+      0.608695652173913,
+      0.7782608695652173,
+      0.9478260869565217,
+      1.117391304347826,
+      1.2869565217391306,
+      1.4565217391304348,
+      1.626086956521739,
+      1.7956521739130435,
+      1.9652173913043478,
+      2.134782608695652,
+      2.3043478260869565,
+      2.473913043478261,
+      2.643478260869565,
+      2.8130434782608695,
+      2.982608695652174,
+      3.152173913043478,
+      3.3217391304347825,
+      3.491304347826087,
+      3.660869565217391,
+      3.8304347826086955,
+      4.0
+    ],
+    "policy": {
+      "label": "fixed_triplet_data_driven_thresholds_v1",
+      "target_openings_mm": [
+        20.0,
+        35.0,
+        50.0
+      ],
+      "threshold_low_mid": 3325.246337890625,
+      "threshold_mid_high": 5305.74169921875
+    },
+    "fair_tuning": {
+      "n_candidates": 24,
+      "n_repeats": 5,
+      "selection_metric": "mean_val_r2",
+      "tie_break_metric": "mean_val_are",
+      "budget_profile": "high"
+    }
+  },
+  "command": {
+    "argv": [
+      "D:\\Personal\\eclipse_workspace\\12.10\\ComPare\\inverse_grnn.py"
+    ],
+    "cwd": "D:/Personal/eclipse_workspace/12.10/ComPare",
+    "python_executable": "D:/ProgramData/miniconda3/envs/fertilizer_gpu/python.exe"
+  },
+  "environment": {
+    "python_version": "3.11.14 | packaged by Anaconda, Inc. | (main, Oct 21 2025, 18:30:03) [MSC v.1929 64 bit (AMD64)]",
+    "python_executable": "D:\\ProgramData\\miniconda3\\envs\\fertilizer_gpu\\python.exe",
+    "platform": "Windows-10-10.0.26200-SP0",
+    "machine": "AMD64",
+    "processor": "Intel64 Family 6 Model 198 Stepping 2, GenuineIntel",
+    "sklearn_version": "1.7.2",
+    "torch_version": "2.10.0.dev20251124+cu128",
+    "torch_cuda_available": true,
+    "pandas_version": "2.3.3",
+    "numpy_version": "2.3.5"
+  },
+  "code_version": {
+    "git_commit": "aeda774015ae7af3fa77776f18779ab6a32abf60",
+    "git_branch": "master",
+    "git_dirty": true,
+    "source_file_hashes": {
+      "common_utils.py": "44406f7782f32f55656546781cbc3784900a51b51c9aab7de9d96200135421aa",
+      "fair_tuning.py": "2698cfd201b3786e2846f16b6a1c976d5d6c2f6bd588b956b24719a444688171",
+      "inverse_grnn.py": "5e28b356c52109c29120c88cbcd2b43a5a656599be9e1c0568758972c27b4225",
+      "policy_config.py": "aca05524543b15529d9392993680afbb7ff1287f7ceabe1f9078ec1a9bd66051",
+      "run_utils.py": "f2fcc74ec62112a415660dd7512c0931dcf5dcef1d48a89636ab66a4b995d91d"
+    }
+  },
+  "sample_tracking": {
+    "sample_id_definition": "0-based row index after loading the original input table; stable only within the current input file, not a cross-dataset global key",
+    "source_row_number_definition": "1-based visible spreadsheet row number from the original input table, including header offset"
+  },
+  "artifacts": {
+    "split_indices": {
+      "path": "split_indices.json",
+      "sha256": "ecbaf7b83670e724f09fddf7d22fb967e05e095e5c82f1ba179a2a1c613ca37c",
+      "kind": "single_split",
+      "fold_count": 1,
+      "n_samples": 287
+    }
+  },
+  "outputs": [
+    {
+      "path": "inverse_grnn_predictions_all.csv"
+    },
+    {
+      "path": "inverse_grnn_predictions_main.csv"
+    },
+    {
+      "path": "tuning_records_inverse_grnn.csv"
+    },
+    {
+      "path": "artifacts/inverse/inverse_GRNN/model.joblib"
+    },
+    {
+      "path": "artifacts/inverse/inverse_GRNN/meta.json"
+    },
+    {
+      "path": "artifacts/inverse/inverse_GRNN/test_inputs.npy"
+    },
+    {
+      "path": "artifacts/inverse/inverse_GRNN/test_targets.npy"
+    }
+  ],
+  "extra": {}
+}

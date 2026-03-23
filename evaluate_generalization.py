@@ -11,7 +11,12 @@ import os
 import numpy as np
 import pandas as pd
 
-from common_utils import build_protocol_splits, build_sample_tracking_columns, load_data_with_metadata
+from common_utils import (
+    build_protocol_splits,
+    build_sample_tracking_columns,
+    get_stratify_metadata,
+    load_data_with_metadata,
+)
 from fair_tuning import build_protocol_aligned_inner_splits
 from robustness_utils import (
     DEFAULT_OUTER_REPEATS,
@@ -290,6 +295,7 @@ def _build_replicate_jobs(X, y, training_seeds, outer_repeats, primary_seed):
                     y,
                     protocol="random_stratified",
                     random_state=split_seed,
+                    stratify_view="forward",
                 )
                 for train_seed in training_seeds:
                     replicate = build_replicate_record(
@@ -314,6 +320,7 @@ def _build_replicate_jobs(X, y, training_seeds, outer_repeats, primary_seed):
                         "outer_repeat_id": replicate["outer_repeat_id"],
                         "split_seed": replicate["split_seed"],
                         "replicate_id": replicate["replicate_id"],
+                        **get_stratify_metadata("forward"),
                     })
                     payload_fold_id += 1
         else:
@@ -322,6 +329,7 @@ def _build_replicate_jobs(X, y, training_seeds, outer_repeats, primary_seed):
                     X,
                     y,
                     random_state=int(train_seed),
+                    stratify_view="forward",
                     **spec["kwargs"],
                 )
                 replicate = build_replicate_record(
@@ -346,6 +354,7 @@ def _build_replicate_jobs(X, y, training_seeds, outer_repeats, primary_seed):
                     "outer_repeat_id": replicate["outer_repeat_id"],
                     "split_seed": replicate["split_seed"],
                     "replicate_id": replicate["replicate_id"],
+                    **get_stratify_metadata("forward"),
                 })
                 payload_fold_id += 1
     return jobs, split_payload_folds

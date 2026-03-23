@@ -21,6 +21,7 @@ from common_utils import (
     average_relative_error,
     build_sample_tracking_columns,
     combine_train_val_indices,
+    get_stratify_metadata,
     get_train_val_test_indices,
     load_data_with_metadata,
     validate_predefined_split_indices,
@@ -463,6 +464,8 @@ def train_and_eval_inverse_kan_v2(
     save_test_slice=False,
     artifact_extra=None,
     artifact_source_files=None,
+    outer_split_stratify_view="inverse",
+    inner_stratify_view="inverse",
 ):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -472,7 +475,12 @@ def train_and_eval_inverse_kan_v2(
 
     X_raw, y_raw, sample_meta = load_data_with_metadata(data_path)
     if split_indices is None:
-        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X_raw, y=y_raw, random_state=seed)
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(
+            X=X_raw,
+            y=y_raw,
+            random_state=seed,
+            stratify_view=outer_split_stratify_view,
+        )
     else:
         idx_tr, idx_val, idx_te = validate_predefined_split_indices(
             len(X_raw), split_indices[0], split_indices[1], split_indices[2]
@@ -494,7 +502,12 @@ def train_and_eval_inverse_kan_v2(
     X_test_raw = X_inv_all[idx_te]
     y_test_speed_true = y_inv_all[idx_te]
 
-    inner_splits = build_inner_repeated_splits(X_dev_raw, y_dev_raw, tuning_config)
+    inner_splits = build_inner_repeated_splits(
+        X_dev_raw,
+        y_dev_raw,
+        tuning_config,
+        stratify_view=inner_stratify_view,
+    )
     candidate_configs = _build_candidate_configs(
         hidden_dim_candidates,
         lr_candidates,
@@ -556,6 +569,7 @@ def train_and_eval_inverse_kan_v2(
         idx_val,
         idx_te,
         n_samples=len(X_raw),
+        extra=get_stratify_metadata(outer_split_stratify_view),
     )
 
     r2_all = _safe_r2(y_test_speed_true, pred_test_speed)
@@ -716,12 +730,13 @@ def main():
     tuning_csv = os.path.join(run_dir, "tuning_records_inverse_kan.csv")
     data_path = "data/dataset.xlsx"
     X, y, _ = load_data_with_metadata(data_path)
-    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed, stratify_view="inverse")
     split_payload = build_single_split_artifact_payload(
         split_indices[0],
         split_indices[1],
         split_indices[2],
         n_samples=len(X),
+        extra=get_stratify_metadata("inverse"),
     )
 
     write_manifest(

@@ -15,6 +15,13 @@ from sklearn.model_selection import train_test_split
 EPS = 1e-8
 DEFAULT_TARGET_OPENINGS = (20.0, 35.0, 50.0)
 DEFAULT_OPENING_ATOL = 0.1
+DEFAULT_STRATIFY_VIEW = "forward"
+DEFAULT_OPENING_BINS = 3
+DEFAULT_SPEED_BINS = 3
+DEFAULT_MASS_BINS = 3
+DEFAULT_RARE_CLASS_MERGE_MIN_COUNT = 2
+DEFAULT_RARE_CLASS_PLACEHOLDER = "RARE"
+SUPPORTED_STRATIFY_VIEWS = ("forward", "inverse", "physical_joint")
 
 
 def average_relative_error(y_true, y_pred, eps=EPS):
@@ -79,23 +86,131 @@ def _bin_by_quantiles(values, n_bins=3):
     return np.digitize(values, edges[1:-1], right=False).astype(int)
 
 
-def _build_joint_stratify_labels(X, y, opening_bins=3, speed_bins=3, mass_bins=3):
-    X = np.asarray(X)
-    y = np.asarray(y).reshape(-1)
-    opening_b = _bin_by_quantiles(X[:, 0], n_bins=opening_bins)
-    speed_b = _bin_by_quantiles(X[:, 1], n_bins=speed_bins)
-    mass_b = _bin_by_quantiles(y, n_bins=mass_bins)
+def _normalize_stratify_view(stratify_view):
+    view = str(stratify_view or DEFAULT_STRATIFY_VIEW).strip()
+    if view not in SUPPORTED_STRATIFY_VIEWS:
+        raise ValueError(
+            f"Unsupported stratify_view={stratify_view!r}; "
+            f"expected one of {SUPPORTED_STRATIFY_VIEWS}"
+        )
+    return view
+
+
+def get_stratify_variable_mapping(stratify_view=DEFAULT_STRATIFY_VIEW):
+    view = _normalize_stratify_view(stratify_view)
+    if view == "forward":
+        return {"opening": "X[:,0]", "speed": "X[:,1]", "mass": "y"}
+    if view == "inverse":
+        return {"opening": "X[:,1]", "speed": "y", "mass": "X[:,0]"}
+    return {"opening": "raw.opening", "speed": "raw.speed", "mass": "raw.mass"}
+
+
+def get_stratify_metadata(stratify_view=DEFAULT_STRATIFY_VIEW):
+    return {
+        "stratify_view": _normalize_stratify_view(stratify_view),
+        "stratify_variable_mapping": get_stratify_variable_mapping(stratify_view),
+        "opening_bins": int(DEFAULT_OPENING_BINS),
+        "speed_bins": int(DEFAULT_SPEED_BINS),
+        "mass_bins": int(DEFAULT_MASS_BINS),
+        "rare_class_merge_min_count": int(DEFAULT_RARE_CLASS_MERGE_MIN_COUNT),
+        "rare_class_placeholder": DEFAULT_RARE_CLASS_PLACEHOLDER,
+    }
+
+
+def _validate_stratify_arrays(opening, speed, mass):
+    opening = np.asarray(opening, dtype=float).reshape(-1)
+    speed = np.asarray(speed, dtype=float).reshape(-1)
+    mass = np.asarray(mass, dtype=float).reshape(-1)
+    n = len(opening)
+    if len(speed) != n or len(mass) != n:
+        raise ValueError("opening/speed/mass must have the same number of samples.")
+    return {
+        "opening": opening,
+        "speed": speed,
+        "mass": mass,
+    }
+
+
+def _resolve_named_stratify_variables(
+    X,
+    y,
+    *,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
+    raw_X=None,
+    raw_y=None,
+):
+    view = _normalize_stratify_view(stratify_view)
+    X = np.asarray(X, dtype=float)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    if X.ndim != 2 or X.shape[1] < 2:
+        raise ValueError("X must be a 2D array with at least two columns.")
+    if len(X) != len(y):
+        raise ValueError("X and y must contain the same number of samples.")
+
+    if view == "forward":
+        return _validate_stratify_arrays(X[:, 0], X[:, 1], y)
+    if view == "inverse":
+        return _validate_stratify_arrays(X[:, 1], y, X[:, 0])
+
+    src_X = np.asarray(raw_X if raw_X is not None else X, dtype=float)
+    src_y = np.asarray(raw_y if raw_y is not None else y, dtype=float).reshape(-1)
+    if src_X.ndim != 2 or src_X.shape[1] < 2:
+        raise ValueError("raw_X must be a 2D array with at least two columns for physical_joint.")
+    if len(src_X) != len(src_y):
+        raise ValueError("raw_X and raw_y must contain the same number of samples.")
+    return _validate_stratify_arrays(src_X[:, 0], src_X[:, 1], src_y)
+
+
+def _build_joint_stratify_labels(
+    named_variables,
+    opening_bins=DEFAULT_OPENING_BINS,
+    speed_bins=DEFAULT_SPEED_BINS,
+    mass_bins=DEFAULT_MASS_BINS,
+):
+    vars_map = _validate_stratify_arrays(
+        named_variables["opening"],
+        named_variables["speed"],
+        named_variables["mass"],
+    )
+    opening_b = _bin_by_quantiles(vars_map["opening"], n_bins=opening_bins)
+    speed_b = _bin_by_quantiles(vars_map["speed"], n_bins=speed_bins)
+    mass_b = _bin_by_quantiles(vars_map["mass"], n_bins=mass_bins)
     return np.array([f"{o}_{s}_{m}" for o, s, m in zip(opening_b, speed_b, mass_b)], dtype=object)
 
 
-def _merge_rare_classes(labels, min_count=2):
+def build_joint_stratify_labels_for_view(
+    X,
+    y,
+    *,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
+    raw_X=None,
+    raw_y=None,
+):
+    named_variables = _resolve_named_stratify_variables(
+        X,
+        y,
+        stratify_view=stratify_view,
+        raw_X=raw_X,
+        raw_y=raw_y,
+    )
+    return _build_joint_stratify_labels(named_variables)
+
+
+def _merge_rare_classes(
+    labels,
+    min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT,
+    rare_placeholder=DEFAULT_RARE_CLASS_PLACEHOLDER,
+):
     labels = np.asarray(labels, dtype=object)
     unique, counts = np.unique(labels, return_counts=True)
     count_map = dict(zip(unique, counts))
-    return np.array([lab if count_map[lab] >= min_count else "RARE" for lab in labels], dtype=object)
+    return np.array(
+        [lab if count_map[lab] >= min_count else rare_placeholder for lab in labels],
+        dtype=object,
+    )
 
 
-def _is_valid_stratify_labels(labels, min_count=2):
+def _is_valid_stratify_labels(labels, min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT):
     if labels is None:
         return False
     labels = np.asarray(labels, dtype=object)
@@ -124,13 +239,31 @@ def validate_predefined_split_indices(n_samples, idx_train, idx_val, idx_test):
     return arrays[0], arrays[1], arrays[2]
 
 
-def _build_stratify_labels_or_none(X, y, use_stratify=True):
+def _build_stratify_labels_or_none(
+    X,
+    y,
+    use_stratify=True,
+    *,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
+    raw_X=None,
+    raw_y=None,
+):
     if not use_stratify:
         return None
     try:
-        labels = _build_joint_stratify_labels(X, y)
-        labels = _merge_rare_classes(labels, min_count=2)
-        if not _is_valid_stratify_labels(labels, min_count=2):
+        labels = build_joint_stratify_labels_for_view(
+            X,
+            y,
+            stratify_view=stratify_view,
+            raw_X=raw_X,
+            raw_y=raw_y,
+        )
+        labels = _merge_rare_classes(
+            labels,
+            min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT,
+            rare_placeholder=DEFAULT_RARE_CLASS_PLACEHOLDER,
+        )
+        if not _is_valid_stratify_labels(labels, min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT):
             return None
         return labels
     except Exception:
@@ -145,6 +278,9 @@ def get_train_val_test_indices(
     val_size=0.15,
     random_state=42,
     use_stratify=True,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
+    raw_X=None,
+    raw_y=None,
 ):
     """
     统一 train/val/test 三分数据，保证三个模型使用完全相同的样本索引。
@@ -188,7 +324,14 @@ def get_train_val_test_indices(
         raise ValueError("n_samples 与 len(X) 不一致")
 
     idx_all = np.arange(len(X))
-    stratify_labels = _build_stratify_labels_or_none(X, y, use_stratify=use_stratify)
+    stratify_labels = _build_stratify_labels_or_none(
+        X,
+        y,
+        use_stratify=use_stratify,
+        stratify_view=stratify_view,
+        raw_X=raw_X,
+        raw_y=raw_y,
+    )
 
     if test_size == 0:
         if not (0.0 < val_size < 1.0):
@@ -229,8 +372,15 @@ def get_train_val_test_indices(
 
     val_size_rel = val_size / (1.0 - test_size)
     if lab_train_val is not None:
-        lab_train_val = _merge_rare_classes(lab_train_val, min_count=2)
-        if not _is_valid_stratify_labels(lab_train_val, min_count=2):
+        lab_train_val = _merge_rare_classes(
+            lab_train_val,
+            min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT,
+            rare_placeholder=DEFAULT_RARE_CLASS_PLACEHOLDER,
+        )
+        if not _is_valid_stratify_labels(
+            lab_train_val,
+            min_count=DEFAULT_RARE_CLASS_MERGE_MIN_COUNT,
+        ):
             lab_train_val = None
 
     if lab_train_val is not None:
@@ -292,6 +442,7 @@ def build_opening_holdout_indices(
     val_ratio=0.2,
     target_openings=DEFAULT_TARGET_OPENINGS,
     atol=DEFAULT_OPENING_ATOL,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
 ):
     opening = np.asarray(X[:, 0], dtype=float).reshape(-1)
     test_mask = is_target_opening(opening, target_openings=target_openings, atol=atol)
@@ -310,6 +461,7 @@ def build_opening_holdout_indices(
         val_size=val_ratio,
         random_state=random_state,
         use_stratify=True,
+        stratify_view=stratify_view,
     )
     idx_train = idx_train_val[idx_train_sub]
     idx_val = idx_train_val[idx_val_sub]
@@ -329,6 +481,7 @@ def build_protocol_splits(
     val_opening=None,
     val_speed_min=None,
     val_speed_max=None,
+    stratify_view=DEFAULT_STRATIFY_VIEW,
 ):
     X = np.asarray(X)
     y = np.asarray(y).reshape(-1)
@@ -347,6 +500,7 @@ def build_protocol_splits(
             val_size=val_size,
             random_state=random_state,
             use_stratify=True,
+            stratify_view=stratify_view,
         )
         return {
             "protocol": protocol,
@@ -354,6 +508,7 @@ def build_protocol_splits(
             "idx_train": idx_train,
             "idx_val": idx_val,
             "idx_test": idx_test,
+            **get_stratify_metadata(stratify_view),
         }
 
     if protocol == "leave_one_opening_out":
@@ -379,6 +534,7 @@ def build_protocol_splits(
                 val_size=val_size,
                 random_state=random_state,
                 use_stratify=True,
+                stratify_view=stratify_view,
             )
             idx_train = remaining_idx[idx_train_sub]
             idx_val = remaining_idx[idx_val_sub]
@@ -392,6 +548,7 @@ def build_protocol_splits(
             "idx_test": idx_test,
             "holdout_opening": float(holdout_opening),
             "val_opening": None if val_opening is None else float(val_opening),
+            **get_stratify_metadata(stratify_view),
         }
 
     if protocol == "leave_speed_block_out":
@@ -420,6 +577,7 @@ def build_protocol_splits(
                 val_size=val_size,
                 random_state=random_state,
                 use_stratify=True,
+                stratify_view=stratify_view,
             )
             idx_train = remaining_idx[idx_train_sub]
             idx_val = remaining_idx[idx_val_sub]
@@ -435,6 +593,7 @@ def build_protocol_splits(
             "holdout_speed_max": float(holdout_speed_max),
             "val_speed_min": None if val_speed_min is None else float(val_speed_min),
             "val_speed_max": None if val_speed_max is None else float(val_speed_max),
+            **get_stratify_metadata(stratify_view),
         }
 
     raise ValueError(f"不支持的 protocol：{protocol}")

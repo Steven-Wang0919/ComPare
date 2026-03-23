@@ -18,6 +18,7 @@ from common_utils import (
     average_relative_error,
     build_sample_tracking_columns,
     combine_train_val_indices,
+    get_stratify_metadata,
     get_train_val_test_indices,
     load_data_with_metadata,
     validate_predefined_split_indices,
@@ -216,12 +217,19 @@ def train_and_eval_mlp(
     save_test_slice=False,
     artifact_extra=None,
     artifact_source_files=None,
+    outer_split_stratify_view="forward",
+    inner_stratify_view="forward",
 ):
     print("\n=== 训练 MLP（公平调参协议） ===")
 
     X, y, sample_meta = load_data_with_metadata(data_path)
     if split_indices is None:
-        idx_tr, idx_val, idx_te = get_train_val_test_indices(X=X, y=y, random_state=random_state)
+        idx_tr, idx_val, idx_te = get_train_val_test_indices(
+            X=X,
+            y=y,
+            random_state=random_state,
+            stratify_view=outer_split_stratify_view,
+        )
     else:
         idx_tr, idx_val, idx_te = validate_predefined_split_indices(
             len(X), split_indices[0], split_indices[1], split_indices[2]
@@ -245,6 +253,7 @@ def train_and_eval_mlp(
         idx_val,
         idx_te,
         n_samples=len(X),
+        extra=get_stratify_metadata(outer_split_stratify_view),
     )
 
     inner_splits, inner_split_strategy, inner_split_meta = prepare_inner_cv(
@@ -254,6 +263,7 @@ def train_and_eval_mlp(
         inner_splits=inner_splits,
         inner_split_strategy=inner_split_strategy,
         inner_split_meta=inner_split_meta,
+        stratify_view=inner_stratify_view,
     )
     candidate_configs = _build_candidate_configs(hidden_layer_candidates, alpha_candidates)
 
@@ -416,12 +426,13 @@ def main():
     artifact_dir = os.path.join(run_dir, "artifacts", "forward", "MLP")
     data_path = "data/dataset.xlsx"
     X, y, _ = load_data_with_metadata(data_path)
-    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed)
+    split_indices = get_train_val_test_indices(X=X, y=y, random_state=seed, stratify_view="forward")
     split_payload = build_single_split_artifact_payload(
         split_indices[0],
         split_indices[1],
         split_indices[2],
         n_samples=len(X),
+        extra=get_stratify_metadata("forward"),
     )
 
     write_manifest(

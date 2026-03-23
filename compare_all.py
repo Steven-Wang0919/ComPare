@@ -11,7 +11,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from common_utils import get_train_val_test_indices, load_data_with_metadata
+from common_utils import get_stratify_metadata, get_train_val_test_indices, load_data_with_metadata
 from inverse_grnn import train_and_eval_inverse_grnn
 from inverse_kan import train_and_eval_inverse_kan_v2
 from inverse_mlp import train_and_eval_inverse_mlp
@@ -170,7 +170,12 @@ def _build_compare_replicates(X, y, training_seeds, outer_repeats, primary_seed)
     fold_id_counter = 1
     for outer_repeat_id in range(1, int(outer_repeats) + 1):
         split_seed = split_seed_for_outer_repeat(outer_repeat_id)
-        split_indices = get_train_val_test_indices(X=X, y=y, random_state=split_seed)
+        split_indices = get_train_val_test_indices(
+            X=X,
+            y=y,
+            random_state=split_seed,
+            stratify_view="physical_joint",
+        )
         for train_seed in training_seeds:
             replicate = build_replicate_record(
                 protocol="random_interp",
@@ -194,6 +199,7 @@ def _build_compare_replicates(X, y, training_seeds, outer_repeats, primary_seed)
                 "outer_repeat_id": replicate["outer_repeat_id"],
                 "split_seed": replicate["split_seed"],
                 "replicate_id": replicate["replicate_id"],
+                **get_stratify_metadata("physical_joint"),
             })
             fold_id_counter += 1
     return replicates, split_payload_folds
@@ -221,6 +227,7 @@ def _run_forward_once(output_dir, data_path, replicate):
         random_state=int(replicate["train_seed"]),
         save_csv_path=None,
         split_indices=split_indices,
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "MLP") if save_artifacts else None,
         save_test_slice=save_artifacts,
@@ -238,6 +245,7 @@ def _run_forward_once(output_dir, data_path, replicate):
         save_csv_path=None,
         random_state=int(replicate["train_seed"]),
         split_indices=split_indices,
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "GRNN") if save_artifacts else None,
         save_test_slice=save_artifacts,
@@ -255,6 +263,7 @@ def _run_forward_once(output_dir, data_path, replicate):
         seed=int(replicate["train_seed"]),
         save_csv_path=None,
         split_indices=split_indices,
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "KAN") if save_artifacts else None,
         save_test_slice=save_artifacts,
@@ -371,6 +380,7 @@ def _run_inverse_once(output_dir, data_path, replicate):
         random_state=int(replicate["train_seed"]),
         save_outputs_dir=None,
         split_indices=split_indices,
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "inverse_MLP") if save_artifacts else None,
         save_test_slice=save_artifacts,
@@ -388,6 +398,7 @@ def _run_inverse_once(output_dir, data_path, replicate):
         save_outputs_dir=None,
         split_indices=split_indices,
         random_state=int(replicate["train_seed"]),
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "inverse_GRNN") if save_artifacts else None,
         save_test_slice=save_artifacts,
@@ -404,6 +415,7 @@ def _run_inverse_once(output_dir, data_path, replicate):
         data_path=data_path,
         seed=int(replicate["train_seed"]),
         split_indices=split_indices,
+        outer_split_stratify_view="physical_joint",
         save_artifacts=save_artifacts,
         artifact_dir=os.path.join(artifact_base, "inverse_KAN") if save_artifacts else None,
         save_test_slice=save_artifacts,
